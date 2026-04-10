@@ -1,0 +1,27 @@
+[package]
+name = "mini_waf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Tokio: 异步运行时，提供网络底层 API 和多线程调度
+tokio = { version = "1", features = ["full"] }
+
+# Hyper: 极速 HTTP 底层实现 (这里我们使用最新的 1.0+ 版本)
+hyper = { version = "1", features = ["full"] }
+
+# 以下两个是配合 Hyper 1.0+ 必须的实用工具库
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+
+# 新增时间库，用于记录攻击发生的时间
+chrono = "0.4"
+# 新增：管理 API 框架与 JSON 处理
+axum = "0.8.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 新增：强大的异步数据库驱动 sqlx
+sqlx = { version = "0.8.6", features = ["mysql", "runtime-tokio-rustls", "chrono"] }
+dotenvy = "0.15"
+moka = { version = "0.12", features = ["sync"] }
+uuid = { version = "1.8", features = ["v4"] }
