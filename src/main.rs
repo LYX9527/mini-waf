@@ -1,6 +1,6 @@
 use mini_waf::{api, config, proxy, state};
 use sqlx::mysql::MySqlPoolOptions;
-use state::{AppState, AttackLog};
+use state::{AppState, AttackLog, Route, RouteType};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
@@ -27,15 +27,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("🛡️ 已从数据库成功加载 {} 条防御规则", initial_rules.len());
 
     // 3. 加载微服务路由表 (按前缀长度降序，最长前缀匹配优先)
-    let route_records = sqlx::query!("SELECT path_prefix, upstream FROM routes WHERE status = 1")
-        .fetch_all(&pool)
-        .await?;
-    let mut initial_routes: Vec<(String, String)> = route_records
+    let route_records = sqlx::query!(
+        "SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE status = 1"
+    )
+    .fetch_all(&pool)
+    .await?;
+    let mut initial_routes: Vec<Route> = route_records
         .into_iter()
-        .map(|r| (r.path_prefix, r.upstream))
+        .map(|r| Route {
+            path_prefix: r.path_prefix,
+            upstream: r.upstream,
+            route_type: match r.route_type.as_str() {
+                "static" => RouteType::Static,
+                _ => RouteType::Proxy,
+            },
+            is_spa: r.is_spa != 0,
+        })
         .collect();
-    initial_routes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-    println!("🌐 已从数据库加载 {} 个微服务 API 路由", initial_routes.len());
+    initial_routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+
+    let proxy_count = initial_routes
+        .iter()
+        .filter(|r| r.route_type == RouteType::Proxy)
+        .count();
+    let static_count = initial_routes.len() - proxy_count;
+    println!(
+        "🌐 已从数据库加载 {} 个路由 (代理: {}, 静态: {})",
+        initial_routes.len(),
+        proxy_count,
+        static_count
+    );
 
     // 4. 创建异步日志通道
     let (log_tx, mut log_rx) = mpsc::channel::<AttackLog>(1000);

@@ -3,7 +3,7 @@ pub mod routes;
 use crate::config;
 use crate::state::AppState;
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -14,6 +14,9 @@ pub async fn start_admin_server(state: Arc<AppState>) {
     let app = Router::new()
         .route("/rules", get(routes::get_rules))
         .route("/rules", post(routes::add_rule))
+        .route("/routes", get(routes::get_routes))
+        .route("/routes", post(routes::add_route))
+        .route("/routes", delete(routes::delete_route))
         .with_state(state);
 
     let listener = TcpListener::bind(config::ADMIN_ADDR).await.unwrap();

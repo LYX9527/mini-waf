@@ -24,3 +24,6 @@ pub const TOKEN_TTL_SECS: u64 = 3600; // 1 小时
 
 // JS 质询延迟 (Tarpit)
 pub const JS_CHALLENGE_DELAY_MS: u64 = 2500;
+
+// 静态文件服务
+pub const MAX_STATIC_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB

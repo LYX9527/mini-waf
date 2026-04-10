@@ -105,10 +105,8 @@ pub fn check_rate_limit(
         return None;
     }
 
-    let nanos = chrono::Utc::now().timestamp_subsec_nanos();
-
-    // 利用纳秒时间戳奇偶性实现 50% 概率 A/B 质询
-    if (nanos / 10) % 2 == 0 {
+    // 基于请求计数奇偶性交替触发 JS 质询 / 数学题质询
+    if count % 2 == 0 {
         // 路线 A: JS 无感质询
         println!("🤖 频率异常，触发 [JS 质询]: IP {}", ctx.ip);
         state.captcha_answers.insert(ctx.ip.clone(), (0, 0));
@@ -117,6 +115,7 @@ pub fn check_rate_limit(
     } else {
         // 路线 B: 数学题质询
         println!("🤖 频率异常，触发 [数学题质询]: IP {}", ctx.ip);
+        let nanos = chrono::Utc::now().timestamp_subsec_nanos();
         let num1 = ((nanos / 1000) % 10) + 1;
         let num2 = ((nanos / 100000) % 10) + 1;
         state.captcha_answers.insert(ctx.ip.clone(), (num1, num2));

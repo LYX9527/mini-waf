@@ -3,6 +3,7 @@ pub mod guard;
 pub mod handler;
 pub mod response;
 pub mod router;
+pub mod static_file;
 
 use crate::config;
 use crate::state::AppState;

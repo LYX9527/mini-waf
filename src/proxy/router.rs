@@ -1,52 +1,72 @@
 use super::handler::RequestContext;
 use super::response::*;
-use crate::state::AppState;
+use super::static_file;
+use crate::state::{AppState, Route, RouteType};
 use http_body_util::{Either, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
-/// Stage 4+5: 路由匹配 + URL 重写 + 反向代理
+/// Stage 4+5: 路由匹配 + 按类型分发（反向代理 或 静态文件）
 pub async fn route_and_proxy(
-    mut req: Request<hyper::body::Incoming>,
+    req: Request<hyper::body::Incoming>,
     ctx: &RequestContext,
     state: &AppState,
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
+    // 最长前缀匹配
     let routes = state.routes.read().await;
-    let mut matched_upstream = String::new();
-    let mut matched_prefix = String::new();
-
-    for (prefix, upstream) in routes.iter() {
-        if ctx.path.starts_with(prefix) {
-            // 确保是干净的路径节点匹配
-            if ctx.path.len() == prefix.len() || ctx.path.as_bytes()[prefix.len()] == b'/' {
-                matched_upstream = upstream.clone();
-                matched_prefix = prefix.clone();
-                break;
-            }
-        }
-    }
+    let matched = routes
+        .iter()
+        .find(|r| {
+            ctx.path.starts_with(&r.path_prefix)
+                && (ctx.path.len() == r.path_prefix.len()
+                    || ctx.path.as_bytes()[r.path_prefix.len()] == b'/')
+        })
+        .cloned();
     drop(routes);
 
-    if matched_upstream.is_empty() {
-        println!("👻 未知微服务路径被拒绝: {}", ctx.path);
-        let html = render_error_page(
-            404,
-            "MICROSERVICE NOT FOUND",
-            "API 网关无法在注册表中找到匹配该请求前缀的下游微服务节点。",
-            "#00f0ff",
-            &ctx.ip,
-        );
-        return create_response(html, StatusCode::NOT_FOUND);
+    let route = match matched {
+        Some(r) => r,
+        None => {
+            println!("👻 未知微服务路径被拒绝: {}", ctx.path);
+            let html = render_error_page(
+                404,
+                "MICROSERVICE NOT FOUND",
+                "API 网关无法在注册表中找到匹配该请求前缀的下游微服务节点。",
+                "#00f0ff",
+                &ctx.ip,
+            );
+            return create_response(html, StatusCode::NOT_FOUND);
+        }
+    };
+
+    // 计算路径后缀（剥离路由前缀）
+    let mut suffix = ctx.path[route.path_prefix.len()..].to_string();
+    if suffix.is_empty() || !suffix.starts_with('/') {
+        suffix.insert(0, '/');
     }
 
-    // URL 重写：剥离网关前缀
-    let mut rewritten_path = ctx.path[matched_prefix.len()..].to_string();
-    if rewritten_path.is_empty() || !rewritten_path.starts_with('/') {
-        rewritten_path.insert(0, '/');
+    match route.route_type {
+        RouteType::Proxy => proxy_to_upstream(req, &route, &suffix, ctx).await,
+        RouteType::Static => {
+            println!(
+                "📄 静态文件服务: [前缀:{}] {} -> 目录:{} (SPA: {})",
+                route.path_prefix, ctx.path, route.upstream, route.is_spa
+            );
+            static_file::serve_static(&route.upstream, &suffix, route.is_spa).await
+        }
     }
-    let new_uri_string = format!("{}{}", rewritten_path, ctx.query);
+}
+
+/// 反向代理转发（原有逻辑）
+async fn proxy_to_upstream(
+    mut req: Request<hyper::body::Incoming>,
+    route: &Route,
+    suffix: &str,
+    ctx: &RequestContext,
+) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
+    let new_uri_string = format!("{}{}", suffix, ctx.query);
 
     if let Ok(new_uri) = new_uri_string.parse::<hyper::Uri>() {
         *req.uri_mut() = new_uri;
@@ -54,14 +74,13 @@ pub async fn route_and_proxy(
 
     println!(
         "🔀 API 网关分发: [服务区:{}] {} -> 节点:{} (发往后端的实际URI: {})",
-        matched_prefix, ctx.path, matched_upstream, new_uri_string
+        route.path_prefix, ctx.path, route.upstream, new_uri_string
     );
 
-    // 连接后端微服务
-    let stream = match TcpStream::connect(&matched_upstream).await {
+    let stream = match TcpStream::connect(&route.upstream).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("🔴 无法连接到下游微服务 {}: {}", matched_upstream, e);
+            eprintln!("🔴 无法连接到下游微服务 {}: {}", route.upstream, e);
             let html = render_error_page(
                 502,
                 "DOWNSTREAM UNAVAILABLE",
