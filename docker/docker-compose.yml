@@ -13,6 +13,8 @@ services:
       - RUST_LOG=info
       - TZ=Asia/Shanghai
       - MMDB_PATH=./data/GeoLite2-City.mmdb
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
     depends_on:
       mysql:
