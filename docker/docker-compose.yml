@@ -11,6 +11,8 @@ services:
       - DATABASE_URL=mysql://mini_waf_user:password@mysql:3306/mini_waf
       - JWT_SECRET=super_secret_waf_key_please_change
       - RUST_LOG=info
+      - TZ=Asia/Shanghai
+      - MMDB_PATH=./data/GeoLite2-City.mmdb
     restart: unless-stopped
     depends_on:
       mysql:
@@ -24,6 +26,7 @@ services:
       - MYSQL_DATABASE=mini_waf
       - MYSQL_USER=mini_waf_user
       - MYSQL_PASSWORD=password
+      - TZ=Asia/Shanghai
     volumes:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
