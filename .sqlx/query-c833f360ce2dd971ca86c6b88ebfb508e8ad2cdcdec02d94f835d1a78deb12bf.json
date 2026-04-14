@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT ip_address FROM ip_whitelist",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip_address",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "max_size": 180
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c833f360ce2dd971ca86c6b88ebfb508e8ad2cdcdec02d94f835d1a78deb12bf"
+}

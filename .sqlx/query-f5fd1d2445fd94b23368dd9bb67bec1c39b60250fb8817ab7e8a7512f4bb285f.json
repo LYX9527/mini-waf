@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT setting_value FROM system_settings WHERE setting_key = 'custom_block_page'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "setting_value",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "max_size": 2000
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f5fd1d2445fd94b23368dd9bb67bec1c39b60250fb8817ab7e8a7512f4bb285f"
+}

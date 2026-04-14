@@ -1,0 +1,44 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT keyword, target_field, match_type FROM rules WHERE status = 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "keyword",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "target_field",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL",
+          "max_size": 200
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "match_type",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL",
+          "max_size": 200
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6a8c4e0fb55c5999ff370cc98b74d724521bb015aaf96e63b925c56939f7c682"
+}

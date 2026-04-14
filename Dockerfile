@@ -14,6 +14,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev wget ca-certificates
 # 复制全部源码并编译
 COPY . .
+ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
 # 下载预建的 GeoLite 数据库

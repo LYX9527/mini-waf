@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE routes SET path_prefix = ?, upstream = ?, route_type = ?, is_spa = ? WHERE path_prefix = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "789af70062aff30abca1bee60b3bb4a5d77df63b79b2e0aa507b787bc81c9ec1"
+}

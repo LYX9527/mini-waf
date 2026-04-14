@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'CUSTOM', 1, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "550b1fa818901da4fb1f168e1ebb193b36cf2890abaa70da405636e4918a5eb4"
+}

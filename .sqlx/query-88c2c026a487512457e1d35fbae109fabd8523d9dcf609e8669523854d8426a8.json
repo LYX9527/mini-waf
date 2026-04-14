@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO routes (path_prefix, upstream, route_type, is_spa, status) VALUES (?, ?, ?, ?, 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "88c2c026a487512457e1d35fbae109fabd8523d9dcf609e8669523854d8426a8"
+}

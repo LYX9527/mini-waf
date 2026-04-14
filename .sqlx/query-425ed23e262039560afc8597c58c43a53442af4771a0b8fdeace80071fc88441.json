@@ -1,0 +1,54 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE path_prefix = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "path_prefix",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "upstream",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "route_type",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM",
+          "max_size": 24
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "is_spa",
+        "type_info": {
+          "type": "Tiny",
+          "flags": "NOT_NULL",
+          "max_size": 1
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "425ed23e262039560afc8597c58c43a53442af4771a0b8fdeace80071fc88441"
+}

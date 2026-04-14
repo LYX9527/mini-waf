@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM rules WHERE keyword = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "4be89c71910bbc3db0bf7b8b6dca8246b247fcb29bb4cf7977396408b0b1e89f"
+}

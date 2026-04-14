@@ -1,0 +1,64 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT path_prefix, upstream, route_type, is_spa, status FROM routes ORDER BY LENGTH(path_prefix) DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "path_prefix",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "upstream",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "route_type",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM",
+          "max_size": 24
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "is_spa",
+        "type_info": {
+          "type": "Tiny",
+          "flags": "NOT_NULL",
+          "max_size": 1
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": {
+          "type": "Tiny",
+          "flags": "NOT_NULL",
+          "max_size": 4
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e1962f8cc5bcc4c6868d79a1f23b662fb42abf7570d7190d852d61065ecc86d5"
+}
