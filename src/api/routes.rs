@@ -193,7 +193,7 @@ pub async fn add_route(
                     RouteType::Proxy
                 },
                 is_spa: payload.is_spa,
-                rr_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
             routes.push(new_route);
@@ -290,9 +290,9 @@ pub async fn enable_route(
                     routes.push(Route {
                         path_prefix: r.path_prefix.clone(),
                         upstream: r.upstream,
-                        route_type: if r.route_type == "static" { crate::state::RouteType::Static } else { crate::state::RouteType::Proxy },
+                        route_type: if r.route_type == "static" { RouteType::Static } else { RouteType::Proxy },
                         is_spa: r.is_spa != 0,
-                        rr_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                        rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
                     routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
                 }

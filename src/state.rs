@@ -92,7 +92,7 @@ pub struct AppState {
     pub routes: RwLock<Vec<Route>>,
     pub log_tx: mpsc::Sender<AttackLog>,
     pub db_pool: MySqlPool,
-    pub custom_block_page: tokio::sync::RwLock<String>,
+    pub custom_block_page: RwLock<String>,
     pub rate_limiter: Cache<String, u64>,
     pub penalty_box: Cache<String, u32>,
     pub captcha_answers: Cache<String, (u32, u32)>,

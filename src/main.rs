@@ -20,18 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .connect(&db_url)
         .await?;
     log_success!("DATABASE", "数据库连接成功！");
-
-    // 自动迁移增强 WAF 规则字段
-    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN target_field VARCHAR(50) NOT NULL DEFAULT 'URL';").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN match_type VARCHAR(50) NOT NULL DEFAULT 'Contains';").execute(&pool).await;
-    let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('custom_block_page', '', '自定义拦截页面 HTML（留空表示原生）');").execute(&pool).await;
-    let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('geo_blocked_countries', '', '被封禁的国家 ISO 代码（逗号分隔，如 RU,IR）');").execute(&pool).await;
-    // 自动迁移：访问日志增加 IP 归属地字段
-    let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN country VARCHAR(10) DEFAULT NULL;").execute(&pool).await;
-    let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN city VARCHAR(100) DEFAULT NULL;").execute(&pool).await;
-    // 自动迁移：管理员表
-    let _ = sqlx::query(include_str!("../migrations/004_admin_users.sql")).execute(&pool).await;
-
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await?;
+    log_success!("DATABASE", "数据库迁移完成");
     // 2. 加载 WAF 防御规则
     let rule_records = sqlx::query!("SELECT keyword, target_field, match_type FROM rules WHERE status = 1")
         .fetch_all(&pool)

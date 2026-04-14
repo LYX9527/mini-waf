@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 
 /// Stage 4+5: 路由匹配 + 按类型分发（反向代理 或 静态文件）
 pub async fn route_and_proxy(
-    req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
     ctx: &RequestContext,
     state: &AppState,
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -61,7 +61,7 @@ pub async fn route_and_proxy(
 }
 
 async fn proxy_to_upstream(
-    mut req: Request<hyper::body::Incoming>,
+    mut req: Request<Incoming>,
     route: &Route,
     suffix: &str,
     ctx: &RequestContext,
@@ -90,7 +90,7 @@ async fn proxy_to_upstream(
 
     let target = if candidates.is_empty() {
         let html = render_error_page(None, 502, "BAD GATEWAY", "无可用下游服务节点配置", "#b142f5", &ctx.ip);
-        return Ok(create_response(html, StatusCode::BAD_GATEWAY).unwrap());
+        return Ok(create_response(html, StatusCode::BAD_GATEWAY)?);
     } else {
         let count = route.rr_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         candidates[count % candidates.len()]

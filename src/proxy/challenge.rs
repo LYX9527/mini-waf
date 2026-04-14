@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// 调用者应先检查 ctx.is_waf_endpoint()
 pub async fn handle_challenge_endpoint(
     ctx: &RequestContext,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
     if ctx.path_query == "/.waf/js_verify" {
@@ -24,7 +24,7 @@ pub async fn handle_challenge_endpoint(
 /// 处理 JS 质询验证 (POST /.waf/js_verify)
 async fn handle_js_verify(
     ctx: &RequestContext,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
     let whole_body = match req.collect().await {
@@ -79,7 +79,7 @@ async fn handle_js_verify(
 /// 处理数学验证码验证 (POST /.waf/verify)
 async fn handle_captcha_verify(
     ctx: &RequestContext,
-    req: Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
     let whole_body = match req.collect().await {
