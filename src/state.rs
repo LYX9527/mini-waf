@@ -1,6 +1,7 @@
 use moka::sync::Cache;
 use sqlx::MySqlPool;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
@@ -48,6 +49,7 @@ pub struct AccessLog {
     pub is_blocked: bool,
     pub matched_rule: Option<String>,
     pub user_agent: String,
+    pub referer: String,
 }
 
 /// 实时计数器（原子操作，无锁）
@@ -55,6 +57,8 @@ pub struct RealtimeCounters {
     pub total_requests_today: AtomicU64,
     pub blocked_requests_today: AtomicU64,
     pub start_time: Instant,
+    /// QPS 滑动窗口：记录最近 10 秒内每个请求的时间戳和累计计数
+    pub qps_window: RwLock<VecDeque<(Instant, u64)>>,
 }
 
 impl RealtimeCounters {
@@ -63,6 +67,7 @@ impl RealtimeCounters {
             total_requests_today: AtomicU64::new(0),
             blocked_requests_today: AtomicU64::new(0),
             start_time: Instant::now(),
+            qps_window: RwLock::new(VecDeque::with_capacity(10000)),
         }
     }
 }
@@ -77,11 +82,11 @@ pub struct AppState {
     pub penalty_box: Cache<String, u32>,
     pub captcha_answers: Cache<String, (u32, u32)>,
     pub verified_tokens: Cache<String, ClientFingerprint>,
-    // 新增：黑白名单（内存 HashSet，O(1) 查找）
+    // 黑白名单（内存 HashSet，O(1) 查找）
     pub ip_blacklist: RwLock<HashSet<String>>,
     pub ip_whitelist: RwLock<HashSet<String>>,
-    // 新增：访问日志通道
+    // 访问日志通道
     pub access_log_tx: mpsc::Sender<AccessLog>,
-    // 新增：实时计数器
+    // 实时计数器
     pub counters: RealtimeCounters,
 }

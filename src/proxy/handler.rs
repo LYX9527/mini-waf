@@ -89,6 +89,13 @@ fn is_static_asset_path(path: &str) -> bool {
 
 /// 发送访问日志
 fn send_access_log(state: &AppState, ctx: &RequestContext, status_code: u16, is_blocked: bool, matched_rule: Option<String>) {
+    let referer = ctx
+        .raw_headers
+        .get(hyper::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
     let log = AccessLog {
         ip: ctx.ip.clone(),
         path: ctx.path_query.clone(),
@@ -97,6 +104,7 @@ fn send_access_log(state: &AppState, ctx: &RequestContext, status_code: u16, is_
         is_blocked,
         matched_rule,
         user_agent: ctx.user_agent.clone(),
+        referer,
     };
     let _ = state.access_log_tx.try_send(log);
 }
@@ -110,7 +118,23 @@ pub async fn handle_request(
     let ctx = RequestContext::new(&req, remote_addr);
 
     // 原子计数器：总请求数 +1
-    state.counters.total_requests_today.fetch_add(1, Ordering::Relaxed);
+    let total = state.counters.total_requests_today.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // QPS 滑动窗口：记录请求时间戳和累计计数
+    {
+        let now = std::time::Instant::now();
+        let mut window = state.counters.qps_window.write().await;
+        window.push_back((now, total));
+        // 清理 10 秒前的数据
+        let cutoff = now - std::time::Duration::from_secs(10);
+        while let Some(&(t, _)) = window.front() {
+            if t < cutoff {
+                window.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
 
     // Stage -1: IP 黑白名单检查
     {

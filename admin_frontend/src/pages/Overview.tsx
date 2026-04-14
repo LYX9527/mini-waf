@@ -4,16 +4,27 @@ import {
   SafetyOutlined,
   ApiOutlined,
   ClockCircleOutlined,
+  GlobalOutlined,
+  UserOutlined,
+  WarningOutlined,
+  StopOutlined,
+  DashboardOutlined,
 } from '@ant-design/icons'
-import { Line, Column } from '@ant-design/charts'
-import { useEffect, useState } from 'react'
+import { Line, Column, Pie } from '@ant-design/charts'
+import { ComposableMap, Geographies, Geography, Marker, ZoomableGroup } from 'react-simple-maps'
+import { useEffect, useState, useCallback } from 'react'
 import api from '../api/client'
 
-interface RealtimeStats {
+interface OverviewStats {
   total_requests: number
+  unique_ips: number
+  unique_visitors: number
   blocked_attacks: number
-  active_connections: number
-  uptime_seconds: number
+  err_4xx: number
+  err_4xx_rate: number
+  err_5xx: number
+  err_5xx_rate: number
+  qps: number
 }
 
 interface TodayStats {
@@ -22,43 +33,110 @@ interface TodayStats {
   blocked: number[]
 }
 
+interface StatusItem {
+  status_code: number
+  count: number
+}
+
+interface RefererItem {
+  referer: string
+  full: string
+  count: number
+}
+
+interface IpGeoItem {
+  ip: string
+  count: number
+  lat?: number
+  lng?: number
+  country?: string
+  city?: string
+}
+
 interface TopItem {
   ip?: string
   rule?: string
   count: number
 }
 
+const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+
+const STATUS_LABELS: Record<number, string> = {
+  200: '200 OK',
+  403: '403 禁止',
+  404: '404 未找到',
+  405: '405 方法不允许',
+  502: '502 网关错误',
+}
+
 export default function Overview() {
-  const [realtime, setRealtime] = useState<RealtimeStats | null>(null)
+  const [overview, setOverview] = useState<OverviewStats | null>(null)
   const [today, setToday] = useState<TodayStats | null>(null)
   const [topIps, setTopIps] = useState<TopItem[]>([])
   const [topRules, setTopRules] = useState<TopItem[]>([])
+  const [statusDist, setStatusDist] = useState<StatusItem[]>([])
+  const [topReferers, setTopReferers] = useState<RefererItem[]>([])
+  const [ipGeoData, setIpGeoData] = useState<IpGeoItem[]>([])
   const [loading, setLoading] = useState(true)
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const [rt, td, ips, rules] = await Promise.all([
-        api.get('/stats/realtime'),
+      const [ov, td, ips, rules, status, referers, geo] = await Promise.all([
+        api.get('/stats/overview'),
         api.get('/stats/today'),
         api.get('/stats/top-ips'),
         api.get('/stats/top-rules'),
+        api.get('/stats/status-distribution'),
+        api.get('/stats/top-referers'),
+        api.get('/stats/ip-geo'),
       ])
-      setRealtime(rt.data)
+      setOverview(ov.data)
       setToday(td.data)
       setTopIps(ips.data.data)
       setTopRules(rules.data.data)
+      setStatusDist(status.data.data)
+      setTopReferers(referers.data.data)
+      setIpGeoData(geo.data.data)
     } catch (e) {
       console.error('Failed to fetch stats:', e)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     fetchData()
     const timer = setInterval(fetchData, 10000)
     return () => clearInterval(timer)
-  }, [])
+  }, [fetchData])
+
+  // 批量查询 IP 地理位置
+  useEffect(() => {
+    if (ipGeoData.length === 0) return
+    const ips = ipGeoData.map((d) => d.ip).filter((ip) => ip !== '127.0.0.1' && ip !== '::1')
+    if (ips.length === 0) return
+
+    // 使用 ip-api.com 批量查询（免费，每批最多 100 个）
+    const batch = ips.slice(0, 50)
+    fetch('http://ip-api.com/batch?fields=query,lat,lon,country,city', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batch.map((ip) => ({ query: ip }))),
+    })
+      .then((r) => r.json())
+      .then((results: Array<{ query: string; lat: number; lon: number; country: string; city: string }>) => {
+        setIpGeoData((prev) =>
+          prev.map((item) => {
+            const geo = results.find((r) => r.query === item.ip)
+            if (geo && geo.lat) {
+              return { ...item, lat: geo.lat, lng: geo.lon, country: geo.country, city: geo.city }
+            }
+            return item
+          })
+        )
+      })
+      .catch(() => {})
+  }, [ipGeoData.length]) // 只在首次有数据时查询
 
   const formatUptime = (seconds: number) => {
     const h = Math.floor(seconds / 3600)
@@ -80,52 +158,45 @@ export default function Overview() {
       { hour: `${h}:00`, type: '拦截', value: today.blocked[i] },
     ]) || []
 
+  const pieData = statusDist
+    .filter((d) => [200, 403, 404, 405, 502].includes(d.status_code))
+    .map((d) => ({
+      type: STATUS_LABELS[d.status_code] || `${d.status_code}`,
+      value: d.count,
+    }))
+
+  const geoMarkers = ipGeoData.filter((d) => d.lat && d.lng)
+
+  const statCards = [
+    { title: '今日请求', value: overview?.total_requests || 0, icon: <ApiOutlined />, color: '#1668dc' },
+    { title: '独立 IP', value: overview?.unique_ips || 0, icon: <GlobalOutlined />, color: '#13c2c2' },
+    { title: '独立访客', value: overview?.unique_visitors || 0, icon: <UserOutlined />, color: '#722ed1' },
+    { title: '拦截攻击', value: overview?.blocked_attacks || 0, icon: <SafetyOutlined />, color: '#f5222d' },
+    { title: '4xx 错误', value: overview?.err_4xx || 0, icon: <WarningOutlined />, color: '#fa8c16' },
+    { title: '4xx 错误率', value: `${overview?.err_4xx_rate || 0}%`, icon: <WarningOutlined />, color: '#faad14' },
+    { title: '5xx 错误', value: overview?.err_5xx || 0, icon: <StopOutlined />, color: '#f5222d' },
+    { title: '5xx 错误率', value: `${overview?.err_5xx_rate || 0}%`, icon: <StopOutlined />, color: '#eb2f96' },
+    { title: '实时 QPS', value: overview?.qps || 0, icon: <DashboardOutlined />, color: '#52c41a' },
+  ]
+
   return (
     <div>
       <h2 style={{ color: '#c9d1d9', marginBottom: 24, fontWeight: 600 }}>总览面板</h2>
 
-      {/* 统计卡片 */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card style={{ borderColor: '#21262d' }}>
-            <Statistic
-              title={<span style={{ color: '#8b949e' }}>今日总请求</span>}
-              value={realtime?.total_requests || 0}
-              prefix={<ApiOutlined style={{ color: '#1668dc' }} />}
-              valueStyle={{ color: '#1668dc' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card style={{ borderColor: '#21262d' }}>
-            <Statistic
-              title={<span style={{ color: '#8b949e' }}>今日拦截攻击</span>}
-              value={realtime?.blocked_attacks || 0}
-              prefix={<SafetyOutlined style={{ color: '#f5222d' }} />}
-              valueStyle={{ color: '#f5222d' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card style={{ borderColor: '#21262d' }}>
-            <Statistic
-              title={<span style={{ color: '#8b949e' }}>活跃连接</span>}
-              value={realtime?.active_connections || 0}
-              prefix={<ThunderboltOutlined style={{ color: '#52c41a' }} />}
-              valueStyle={{ color: '#52c41a' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card style={{ borderColor: '#21262d' }}>
-            <Statistic
-              title={<span style={{ color: '#8b949e' }}>运行时间</span>}
-              value={formatUptime(realtime?.uptime_seconds || 0)}
-              prefix={<ClockCircleOutlined style={{ color: '#faad14' }} />}
-              valueStyle={{ color: '#faad14' }}
-            />
-          </Card>
-        </Col>
+      {/* 统计卡片行 */}
+      <Row gutter={[12, 12]}>
+        {statCards.map((card) => (
+          <Col xs={12} sm={8} lg={8} xl={8} key={card.title}>
+            <Card size="small" style={{ borderColor: '#21262d' }}>
+              <Statistic
+                title={<span style={{ color: '#8b949e', fontSize: 12 }}>{card.title}</span>}
+                value={card.value}
+                prefix={<span style={{ color: card.color, marginRight: 4 }}>{card.icon}</span>}
+                valueStyle={{ color: card.color, fontSize: 20 }}
+              />
+            </Card>
+          </Col>
+        ))}
       </Row>
 
       {/* 趋势图 */}
@@ -154,8 +225,109 @@ export default function Overview() {
         </Col>
       </Row>
 
-      {/* Top N */}
+      {/* 地图 + 状态分布 */}
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+        <Col xs={24} lg={14}>
+          <Card title="IP 来源世界地图" style={{ borderColor: '#21262d' }}>
+            <div style={{ height: 360, overflow: 'hidden', borderRadius: 4 }}>
+              <ComposableMap
+                projectionConfig={{ rotate: [-10, 0, 0] }}
+                style={{ width: '100%', height: '100%' }}
+              >
+                <ZoomableGroup center={[0, 20]} zoom={1}>
+                  <Geographies geography={GEO_URL}>
+                    {({ geographies }) =>
+                      geographies.map((geo) => (
+                        <Geography
+                          key={geo.rsmKey}
+                          geography={geo}
+                          fill="#161b22"
+                          stroke="#30363d"
+                          strokeWidth={0.5}
+                          style={{
+                            default: { outline: 'none' },
+                            hover: { fill: '#21262d', outline: 'none' },
+                          }}
+                        />
+                      ))
+                    }
+                  </Geographies>
+                  {geoMarkers.map((item) => (
+                    <Marker key={item.ip} coordinates={[item.lng!, item.lat!]}>
+                      <circle
+                        r={Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))}
+                        fill="#f5222d80"
+                        stroke="#f5222d"
+                        strokeWidth={1}
+                      >
+                        <animate
+                          attributeName="r"
+                          values={`${Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))};${Math.max(5, Math.min(14, Math.sqrt(item.count) * 2.5))};${Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))}`}
+                          dur="2s"
+                          repeatCount="indefinite"
+                        />
+                      </circle>
+                      <title>{item.ip} ({item.city || item.country || '未知'}) - {item.count} 次请求</title>
+                    </Marker>
+                  ))}
+                </ZoomableGroup>
+              </ComposableMap>
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} lg={10}>
+          <Card title="响应状态分布" style={{ borderColor: '#21262d' }}>
+            <Pie
+              data={pieData}
+              angleField="value"
+              colorField="type"
+              height={320}
+              theme="dark"
+              radius={0.8}
+              innerRadius={0.5}
+              label={{
+                style: { fill: '#c9d1d9', fontSize: 12 },
+              }}
+              legend={{
+                itemName: { style: { fill: '#c9d1d9', fontSize: 12 } },
+              }}
+              statistic={{
+                title: { style: { color: '#8b949e' }, content: '总计' },
+                content: { style: { color: '#c9d1d9', fontSize: 20 } },
+              }}
+              color={['#52c41a', '#f5222d', '#fa8c16', '#faad14', '#eb2f96']}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* Referer + Top IPs */}
+      <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+        <Col xs={24} lg={12}>
+          <Card title="Top 10 Referer 来源" style={{ borderColor: '#21262d' }}>
+            <Column
+              data={topReferers.map((item) => ({
+                referer: item.referer.length > 30 ? item.referer.slice(0, 30) + '...' : item.referer,
+                count: item.count,
+              }))}
+              xField="referer"
+              yField="count"
+              height={280}
+              theme="dark"
+              color="#13c2c2"
+              axis={{
+                x: {
+                  label: {
+                    style: { fill: '#8b949e' },
+                    autoRotate: true,
+                    autoHide: true,
+                  },
+                },
+                y: { label: { style: { fill: '#8b949e' } } },
+              }}
+            />
+          </Card>
+        </Col>
         <Col xs={24} lg={12}>
           <Card title="Top 5 攻击来源 IP" style={{ borderColor: '#21262d' }}>
             <Column
@@ -163,10 +335,10 @@ export default function Overview() {
                 ip: item.ip || 'unknown',
                 count: item.count,
               }))}
-              theme="dark"
               xField="ip"
               yField="count"
-              height={250}
+              height={280}
+              theme="dark"
               color="#f5222d"
               axis={{
                 x: { label: { style: { fill: '#8b949e' } } },
@@ -175,7 +347,11 @@ export default function Overview() {
             />
           </Card>
         </Col>
-        <Col xs={24} lg={12}>
+      </Row>
+
+      {/* Top Rules */}
+      <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
+        <Col span={24}>
           <Card title="Top 5 触发规则" style={{ borderColor: '#21262d' }}>
             <Column
               data={topRules.map((item) => ({

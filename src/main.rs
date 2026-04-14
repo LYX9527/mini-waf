@@ -173,13 +173,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // 批量 INSERT
             let mut query = String::from(
-                "INSERT INTO access_logs (ip_address, request_path, method, status_code, is_blocked, matched_rule, user_agent) VALUES ",
+                "INSERT INTO access_logs (ip_address, request_path, method, status_code, is_blocked, matched_rule, user_agent, referer) VALUES ",
             );
             let values: Vec<String> = batch
                 .iter()
                 .map(|l| {
                     format!(
-                        "('{}', '{}', '{}', {}, {}, {}, '{}')",
+                        "('{}', '{}', '{}', {}, {}, {}, '{}', '{}')",
                         l.ip.replace('\'', "''"),
                         l.path.replace('\'', "''").chars().take(2048).collect::<String>(),
                         l.method,
@@ -190,6 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .map(|r| format!("'{}'", r.replace('\'', "''")))
                             .unwrap_or_else(|| "NULL".to_string()),
                         l.user_agent.replace('\'', "''").chars().take(1024).collect::<String>(),
+                        l.referer.replace('\'', "''").chars().take(2048).collect::<String>(),
                     )
                 })
                 .collect();

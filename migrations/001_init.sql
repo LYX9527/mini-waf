@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS access_logs (
     is_blocked   TINYINT       NOT NULL DEFAULT 0,
     matched_rule VARCHAR(255)  DEFAULT NULL,
     user_agent   VARCHAR(1024) DEFAULT NULL,
+    referer      VARCHAR(2048) DEFAULT NULL,
     created_at   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_created_at (created_at),
     INDEX idx_ip (ip_address),

@@ -27,9 +27,13 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         .route("/routes/health-check", post(routes::health_check_route))
         // 统计面板
         .route("/stats/realtime", get(stats::get_realtime_stats))
+        .route("/stats/overview", get(stats::get_overview_stats))
         .route("/stats/today", get(stats::get_today_stats))
         .route("/stats/top-ips", get(stats::get_top_ips))
         .route("/stats/top-rules", get(stats::get_top_rules))
+        .route("/stats/status-distribution", get(stats::get_status_distribution))
+        .route("/stats/top-referers", get(stats::get_top_referers))
+        .route("/stats/ip-geo", get(stats::get_ip_geo))
         // 日志查询
         .route("/logs/attacks", get(logs::get_attack_logs))
         .route("/logs/access", get(logs::get_access_logs))

@@ -13,6 +13,7 @@ export default defineConfig({
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           'vendor-antd': ['antd', '@ant-design/icons'],
           'vendor-charts': ['@ant-design/charts'],
+          'vendor-maps': ['react-simple-maps'],
           'vendor-utils': ['axios', 'dayjs'],
         },
       },
