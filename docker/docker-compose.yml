@@ -8,7 +8,6 @@ services:
       - "49888:48080" # WAF 服务端口
       - "49777:8081"   # 管理控制台端口
     environment:
-      # 替换为真实的 MySQL 比如外部或者如下面启动的 mysql 容器
       - DATABASE_URL=mysql://mini_waf_user:password@mysql:3306/mini_waf
       - JWT_SECRET=super_secret_waf_key_please_change
       - RUST_LOG=info

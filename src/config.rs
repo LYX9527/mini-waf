@@ -2,7 +2,7 @@
 
 // 网络监听地址
 pub const PROXY_ADDR: ([u8; 4], u16) = ([0, 0, 0, 0], 48080);
-pub const ADMIN_ADDR: &str = "127.0.0.1:8081";
+pub const ADMIN_ADDR: &str = "0.0.0.0:8081";
 
 // 数据库连接池
 pub const DB_MAX_CONNECTIONS: u32 = 20;
