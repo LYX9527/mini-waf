@@ -51,6 +51,10 @@ pub async fn update_settings(
             Ok(r) => {
                 if r.rows_affected() > 0 {
                     updated += 1;
+                    if key == "custom_block_page" {
+                        let mut cache = state.custom_block_page.write().await;
+                        *cache = value.clone();
+                    }
                 } else {
                     errors.push(format!("未知设置项: {}", key));
                 }

@@ -8,6 +8,13 @@ use tokio::time::{timeout, Duration};
 #[derive(Deserialize)]
 pub struct AddRuleRequest {
     pub rule: String,
+    pub target_field: Option<String>,
+    pub match_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteRuleRequest {
+    pub rule: String,
 }
 
 #[derive(Deserialize)]
@@ -27,7 +34,14 @@ pub struct DeleteRouteRequest {
 /// GET /rules: 获取当前所有拦截规则
 pub async fn get_rules(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let rules = state.rules.read().await;
-    Json(serde_json::json!({ "rules": *rules }))
+    let rules_json: Vec<serde_json::Value> = rules.iter().map(|r| {
+        serde_json::json!({
+            "keyword": r.keyword,
+            "target_field": r.target_field,
+            "match_type": r.match_type
+        })
+    }).collect();
+    Json(serde_json::json!({ "rules": rules_json }))
 }
 
 /// POST /rules: 动态添加一条新规则，并持久化到数据库
@@ -35,9 +49,24 @@ pub async fn add_rule(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddRuleRequest>,
 ) -> Json<serde_json::Value> {
+    let target_field = payload.target_field.unwrap_or_else(|| "URL".to_string());
+    let match_type = payload.match_type.unwrap_or_else(|| "Contains".to_string());
+
+    // 校验正则表达式有效性
+    let compiled_regex = if match_type == "Regex" {
+        match regex::Regex::new(&payload.rule) {
+            Ok(r) => Some(r),
+            Err(e) => return Json(serde_json::json!({ "status": "error", "message": format!("正则表达式由于语法错误被拒绝: {}", e) })),
+        }
+    } else {
+        None
+    };
+
     let insert_result = sqlx::query!(
-        "INSERT INTO rules (keyword, rule_type, status) VALUES (?, 'CUSTOM', 1)",
-        payload.rule
+        "INSERT INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'CUSTOM', 1, ?, ?)",
+        payload.rule,
+        target_field,
+        match_type
     )
     .execute(&state.db_pool)
     .await;
@@ -45,8 +74,13 @@ pub async fn add_rule(
     match insert_result {
         Ok(_) => {
             let mut rules = state.rules.write().await;
-            if !rules.contains(&payload.rule) {
-                rules.push(payload.rule.clone());
+            if !rules.iter().any(|r| r.keyword == payload.rule && r.target_field == target_field && r.match_type == match_type) {
+                rules.push(crate::state::WafRule {
+                    keyword: payload.rule.clone(),
+                    target_field: target_field.clone(),
+                    match_type: match_type.clone(),
+                    compiled_regex,
+                });
             }
             Json(serde_json::json!({
                 "status": "success",
@@ -59,7 +93,33 @@ pub async fn add_rule(
         })),
     }
 }
+/// DELETE /rules: 移除制定拦截规则
+pub async fn delete_rule(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<DeleteRuleRequest>,
+) -> Json<serde_json::Value> {
+    let result = sqlx::query!(
+        "DELETE FROM rules WHERE keyword = ?",
+        payload.rule
+    )
+    .execute(&state.db_pool)
+    .await;
 
+    match result {
+        Ok(_) => {
+            let mut rules = state.rules.write().await;
+            rules.retain(|r| r.keyword != payload.rule);
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("WAF 规则 '{}' 已彻底删除", payload.rule)
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": format!("规则删除失败: {}", e)
+        })),
+    }
+}
 /// GET /routes: 列出所有路由
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let records = sqlx::query!("SELECT path_prefix, upstream, route_type, is_spa, status FROM routes ORDER BY LENGTH(path_prefix) DESC")
@@ -123,6 +183,7 @@ pub async fn add_route(
                     RouteType::Proxy
                 },
                 is_spa: payload.is_spa,
+                rr_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
             routes.push(new_route);
@@ -139,8 +200,8 @@ pub async fn add_route(
     }
 }
 
-/// DELETE /routes: 停用一条路由
-pub async fn delete_route(
+/// POST /routes/disable: 停用一条路由
+pub async fn disable_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<DeleteRouteRequest>,
 ) -> Json<serde_json::Value> {
@@ -163,6 +224,34 @@ pub async fn delete_route(
         Err(e) => Json(serde_json::json!({
             "status": "error",
             "message": format!("路由停用失败: {}", e)
+        })),
+    }
+}
+
+/// DELETE /routes: 彻底删除一条路由
+pub async fn real_delete_route(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<DeleteRouteRequest>,
+) -> Json<serde_json::Value> {
+    let result = sqlx::query!(
+        "DELETE FROM routes WHERE path_prefix = ?",
+        payload.path_prefix
+    )
+    .execute(&state.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            let mut routes = state.routes.write().await;
+            routes.retain(|r| r.path_prefix != payload.path_prefix);
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("路由 '{}' 已删除", payload.path_prefix)
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": format!("路由删除失败: {}", e)
         })),
     }
 }
@@ -193,6 +282,7 @@ pub async fn enable_route(
                         upstream: r.upstream,
                         route_type: if r.route_type == "static" { crate::state::RouteType::Static } else { crate::state::RouteType::Proxy },
                         is_spa: r.is_spa != 0,
+                        rr_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
                     routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
                 }
@@ -218,19 +308,21 @@ pub struct HealthCheckRequest {
 pub async fn health_check_route(
     Json(payload): Json<HealthCheckRequest>,
 ) -> Json<serde_json::Value> {
+    let start_time = std::time::Instant::now();
     // 3 秒超时尝试 TCP 连接
     let result = timeout(
         Duration::from_secs(3),
         TcpStream::connect(&payload.upstream),
     )
     .await;
+    let latency = start_time.elapsed().as_millis() as u64;
 
     match result {
         Ok(Ok(_stream)) => {
-            Json(serde_json::json!({ "reachable": true }))
+            Json(serde_json::json!({ "reachable": true, "latency_ms": latency }))
         }
         Ok(Err(e)) => {
-            Json(serde_json::json!({ "reachable": false, "error": e.to_string() }))
+            Json(serde_json::json!({ "reachable": false, "error": e.to_string(), "latency_ms": latency }))
         }
         Err(_) => {
             Json(serde_json::json!({ "reachable": false, "error": "连接超时 (3s)" }))

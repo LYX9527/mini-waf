@@ -1,9 +1,11 @@
 use moka::sync::Cache;
+use regex::Regex;
 use sqlx::MySqlPool;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 
@@ -23,6 +25,15 @@ pub struct ClientFingerprint {
     pub user_agent: String,
 }
 
+/// WAF 规则对象
+#[derive(Clone, Debug)]
+pub struct WafRule {
+    pub keyword: String,
+    pub target_field: String, // "URL", "Header", "Body", "User-Agent"
+    pub match_type: String,   // "Contains", "Regex", "Exact"
+    pub compiled_regex: Option<Regex>,
+}
+
 /// 路由类型：反向代理 或 静态文件
 #[derive(Clone, Debug, PartialEq)]
 pub enum RouteType {
@@ -37,6 +48,7 @@ pub struct Route {
     pub upstream: String, // proxy: host:port, static: 文件系统目录路径
     pub route_type: RouteType,
     pub is_spa: bool, // 仅对 static 有意义
+    pub rr_counter: Arc<AtomicUsize>,
 }
 
 /// 访问日志（所有请求）
@@ -74,11 +86,12 @@ impl RealtimeCounters {
 
 /// WAF 全局共享状态
 pub struct AppState {
-    pub rules: RwLock<Vec<String>>,
+    pub rules: RwLock<Vec<WafRule>>,
     pub routes: RwLock<Vec<Route>>,
     pub log_tx: mpsc::Sender<AttackLog>,
     pub db_pool: MySqlPool,
-    pub rate_limiter: Cache<String, u32>,
+    pub custom_block_page: tokio::sync::RwLock<String>,
+    pub rate_limiter: Cache<String, u64>,
     pub penalty_box: Cache<String, u32>,
     pub captcha_answers: Cache<String, (u32, u32)>,
     pub verified_tokens: Cache<String, ClientFingerprint>,
@@ -89,4 +102,9 @@ pub struct AppState {
     pub access_log_tx: mpsc::Sender<AccessLog>,
     // 实时计数器
     pub counters: RealtimeCounters,
+    
+    // Geo-Blocking & Load Balancing
+    pub geo_db: Option<maxminddb::Reader<Vec<u8>>>,
+    pub geo_blocked_countries: RwLock<HashSet<String>>,
+    pub healthy_upstreams: RwLock<HashSet<String>>,
 }

@@ -136,6 +136,7 @@ async fn handle_captcha_verify(
     } else {
         println!("❌ IP {} 人机验证失败。", ctx.ip);
         let html = render_error_page(
+            None,
             403,
             "VERIFICATION FAILED",
             "人机验证失败，请退回上一页重新尝试。",
@@ -148,6 +149,7 @@ async fn handle_captcha_verify(
 
 fn render_challenge_failure(ctx: &RequestContext) -> Response<Either<Incoming, Full<Bytes>>> {
     let html = render_error_page(
+        None,
         403,
         "CHALLENGE FAILED",
         "环境安全检测失败，拒绝访问。",

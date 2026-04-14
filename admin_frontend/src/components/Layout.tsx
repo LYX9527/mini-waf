@@ -96,7 +96,7 @@ export default function MainLayout() {
           }}
         >
           <span style={{ color: '#8b949e', fontSize: 14 }}>
-            Web Application Firewall — 管理控制台
+             管理控制台
           </span>
         </Header>
         <Content

@@ -82,6 +82,7 @@ pub async fn serve_static(
         }
         _ => {
             let html = render_error_page(
+                None,
                 404,
                 "FILE NOT FOUND",
                 "请求的静态资源不存在。",
@@ -96,6 +97,7 @@ pub async fn serve_static(
     if let Ok(metadata) = tokio::fs::metadata(&resolved).await {
         if metadata.len() > config::MAX_STATIC_FILE_SIZE {
             let html = render_error_page(
+                None,
                 413,
                 "FILE TOO LARGE",
                 "请求的静态资源文件大小超过限制。",
@@ -110,6 +112,7 @@ pub async fn serve_static(
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             let html = render_error_page(
+                None,
                 403,
                 "ACCESS DENIED",
                 "权限不足，无法读取请求的文件。",
@@ -120,6 +123,7 @@ pub async fn serve_static(
         }
         Err(_) => {
             let html = render_error_page(
+                None,
                 404,
                 "FILE NOT FOUND",
                 "请求的静态资源不存在。",

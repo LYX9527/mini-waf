@@ -1,9 +1,11 @@
 pub mod challenge;
 pub mod guard;
 pub mod handler;
+pub mod health;
 pub mod response;
 pub mod router;
 pub mod static_file;
+pub mod tls;
 
 use crate::config;
 use crate::state::AppState;
@@ -18,7 +20,7 @@ use tokio::net::TcpListener;
 pub async fn start_proxy_server(state: Arc<AppState>) {
     let addr = SocketAddr::from(config::PROXY_ADDR);
     let listener = TcpListener::bind(addr).await.unwrap();
-    println!("🛡️ WAF 代理启动成功，监听 http://{}", addr);
+    crate::log_success!("HTTP_PROXY", "WAF 防御代理启动成功，监听 http://{}", addr);
 
     loop {
         let (stream, remote_addr) = listener.accept().await.unwrap();
@@ -31,7 +33,9 @@ pub async fn start_proxy_server(state: Arc<AppState>) {
             });
 
             if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
-                eprintln!("客户端连接失败: {:?}", err);
+                if !err.to_string().contains("connection closed") {
+                    crate::log_warn!("HTTP_PROXY", "客户端连接断开/失败: {:?}", err);
+                }
             }
         });
     }

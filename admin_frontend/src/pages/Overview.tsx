@@ -110,33 +110,7 @@ export default function Overview() {
     return () => clearInterval(timer)
   }, [fetchData])
 
-  // 批量查询 IP 地理位置
-  useEffect(() => {
-    if (ipGeoData.length === 0) return
-    const ips = ipGeoData.map((d) => d.ip).filter((ip) => ip !== '127.0.0.1' && ip !== '::1')
-    if (ips.length === 0) return
 
-    // 使用 ip-api.com 批量查询（免费，每批最多 100 个）
-    const batch = ips.slice(0, 50)
-    fetch('http://ip-api.com/batch?fields=query,lat,lon,country,city', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(batch.map((ip) => ({ query: ip }))),
-    })
-      .then((r) => r.json())
-      .then((results: Array<{ query: string; lat: number; lon: number; country: string; city: string }>) => {
-        setIpGeoData((prev) =>
-          prev.map((item) => {
-            const geo = results.find((r) => r.query === item.ip)
-            if (geo && geo.lat) {
-              return { ...item, lat: geo.lat, lng: geo.lon, country: geo.country, city: geo.city }
-            }
-            return item
-          })
-        )
-      })
-      .catch(() => {})
-  }, [ipGeoData.length]) // 只在首次有数据时查询
 
   const formatUptime = (seconds: number) => {
     const h = Math.floor(seconds / 3600)
@@ -285,6 +259,7 @@ export default function Overview() {
               innerRadius={0.5}
               label={{
                 text: 'type',
+                position: 'spider',
                 style: { fill: '#c9d1d9', fontSize: 12 },
               }}
               tooltip={{
@@ -314,9 +289,10 @@ export default function Overview() {
               }))}
               xField="referer"
               yField="count"
+              colorField="referer"
               height={280}
               theme="dark"
-              color="#13c2c2"
+              style={{ radiusTopLeft: 4, radiusTopRight: 4 }}
               axis={{
                 x: {
                   label: {
@@ -339,9 +315,10 @@ export default function Overview() {
               }))}
               xField="ip"
               yField="count"
+              colorField="ip"
               height={280}
               theme="dark"
-              color="#f5222d"
+              style={{ radiusTopLeft: 4, radiusTopRight: 4 }}
               axis={{
                 x: { label: { style: { fill: '#8b949e' } } },
                 y: { label: { style: { fill: '#8b949e' } } },
@@ -362,9 +339,10 @@ export default function Overview() {
               }))}
               xField="rule"
               yField="count"
+              colorField="rule"
               height={250}
               theme="dark"
-              color="#faad14"
+              style={{ radiusTopLeft: 4, radiusTopRight: 4 }}
               axis={{
                 x: { label: { style: { fill: '#8b949e' } } },
                 y: { label: { style: { fill: '#8b949e' } } },

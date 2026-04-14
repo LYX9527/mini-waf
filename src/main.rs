@@ -4,28 +4,47 @@ use state::{AccessLog, AppState, AttackLog, RealtimeCounters, Route, RouteType};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
+use mini_waf::{log_daemon, log_error, log_info, log_success, log_warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
-    println!("=== 启动 Rust 企业级 WAF ===");
+    log_info!("SYSTEM", "启动 MINI WAF");
 
     // 1. 连接 MySQL 数据库
     let db_url = std::env::var("DATABASE_URL").expect("必须在 .env 文件中设置 DATABASE_URL");
-    println!("⏳ 正在连接 MySQL 数据库...");
+    log_info!("DATABASE", "正在连接 MySQL 数据库...");
 
     let pool = MySqlPoolOptions::new()
         .max_connections(config::DB_MAX_CONNECTIONS)
         .connect(&db_url)
         .await?;
-    println!("✅ 数据库连接成功！");
+    log_success!("DATABASE", "数据库连接成功！");
+
+    // 自动迁移增强 WAF 规则字段
+    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN target_field VARCHAR(50) NOT NULL DEFAULT 'URL';").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE rules ADD COLUMN match_type VARCHAR(50) NOT NULL DEFAULT 'Contains';").execute(&pool).await;
+    let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('custom_block_page', '', '自定义拦截页面 HTML（留空表示原生）');").execute(&pool).await;
+    let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('geo_blocked_countries', '', '被封禁的国家 ISO 代码（逗号分隔，如 RU,IR）');").execute(&pool).await;
 
     // 2. 加载 WAF 防御规则
-    let rule_records = sqlx::query!("SELECT keyword FROM rules WHERE status = 1")
+    let rule_records = sqlx::query!("SELECT keyword, target_field, match_type FROM rules WHERE status = 1")
         .fetch_all(&pool)
         .await?;
-    let initial_rules: Vec<String> = rule_records.into_iter().map(|r| r.keyword).collect();
-    println!("🛡️ 已从数据库成功加载 {} 条防御规则", initial_rules.len());
+    let initial_rules: Vec<state::WafRule> = rule_records.into_iter().map(|r| {
+        let compiled_regex = if r.match_type == "Regex" {
+            regex::Regex::new(&r.keyword).ok()
+        } else {
+            None
+        };
+        state::WafRule {
+            keyword: r.keyword,
+            target_field: r.target_field,
+            match_type: r.match_type,
+            compiled_regex,
+        }
+    }).collect();
+    log_success!("RULE_ENG", "已从数据库成功加载 {} 条防御规则", initial_rules.len());
 
     // 3. 加载微服务路由表 (按前缀长度降序，最长前缀匹配优先)
     let route_records = sqlx::query!(
@@ -43,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 _ => RouteType::Proxy,
             },
             is_spa: r.is_spa != 0,
+            rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .collect();
     initial_routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
@@ -52,12 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .filter(|r| r.route_type == RouteType::Proxy)
         .count();
     let static_count = initial_routes.len() - proxy_count;
-    println!(
-        "🌐 已从数据库加载 {} 个路由 (代理: {}, 静态: {})",
-        initial_routes.len(),
-        proxy_count,
-        static_count
-    );
+    log_success!("ROUTER", "已从数据库加载 {} 个路由 (代理: {}, 静态: {})", initial_routes.len(), proxy_count, static_count);
 
     // 4. 加载 IP 黑白名单到内存
     let blacklist_records = sqlx::query!("SELECT ip_address FROM ip_blacklist")
@@ -67,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into_iter()
         .map(|r| r.ip_address)
         .collect();
-    println!("🚫 已加载 {} 条 IP 黑名单", initial_blacklist.len());
+    log_success!("FIREWALL", "已加载 {} 条 IP 黑名单", initial_blacklist.len());
 
     let whitelist_records = sqlx::query!("SELECT ip_address FROM ip_whitelist")
         .fetch_all(&pool)
@@ -76,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into_iter()
         .map(|r| r.ip_address)
         .collect();
-    println!("✅ 已加载 {} 条 IP 白名单", initial_whitelist.len());
+    log_success!("FIREWALL", "已加载 {} 条 IP 白名单", initial_whitelist.len());
 
     // 5. 创建异步日志通道
     let (log_tx, mut log_rx) = mpsc::channel::<AttackLog>(1000);
@@ -98,12 +113,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .time_to_live(std::time::Duration::from_secs(config::TOKEN_TTL_SECS))
         .build();
 
-    // 8. 构建全局状态
+    // 8. 获取全局设置
+    let block_page_row = sqlx::query!("SELECT setting_value FROM system_settings WHERE setting_key = 'custom_block_page'")
+        .fetch_optional(&pool)
+        .await?;
+    let custom_block_page = block_page_row.map(|r| r.setting_value).unwrap_or_default();
+
+    let geo_countries_row = sqlx::query!("SELECT setting_value FROM system_settings WHERE setting_key = 'geo_blocked_countries'")
+        .fetch_optional(&pool)
+        .await?;
+    let geo_str = geo_countries_row.map(|r| r.setting_value).unwrap_or_default();
+    let initial_geo_blocked: HashSet<String> = geo_str.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_uppercase()).collect();
+
+    let mut geo_db = None;
+    if let Ok(mmdb_path) = std::env::var("MMDB_PATH") {
+        if !mmdb_path.is_empty() {
+            match maxminddb::Reader::open_readfile(&mmdb_path) {
+                Ok(reader) => {
+                    log_success!("GEO_BLOCK", "成功加载全球 IP 库: {}", mmdb_path);
+                    geo_db = Some(reader);
+                }
+                Err(e) => log_error!("GEO_BLOCK", "无法加载 IP 库 {}: {}", mmdb_path, e),
+            }
+        }
+    } else {
+         log_warn!("GEO_BLOCK", "未配置 MMDB_PATH 环境变量，Geo-Blocking 功能将处于静默状态。");
+    }
+
+    // 9. 构建全局状态
     let state = Arc::new(AppState {
         rules: RwLock::new(initial_rules),
         routes: RwLock::new(initial_routes),
         log_tx,
         db_pool: pool.clone(),
+        custom_block_page: RwLock::new(custom_block_page),
         rate_limiter,
         penalty_box,
         captcha_answers,
@@ -112,12 +155,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ip_whitelist: RwLock::new(initial_whitelist),
         access_log_tx,
         counters: RealtimeCounters::new(),
+        geo_db,
+        geo_blocked_countries: RwLock::new(initial_geo_blocked),
+        healthy_upstreams: RwLock::new(HashSet::new()),
     });
 
-    // 9. 后台任务：攻击日志落盘
+    // 10. 后台任务：攻击日志落盘
     let log_pool = pool.clone();
     tokio::spawn(async move {
-        println!("📝 攻击日志落盘守护进程已启动...");
+        log_daemon!("DAEMON", "攻击日志落盘守护进程已启动...");
         while let Some(log) = log_rx.recv().await {
             let insert_result = sqlx::query!(
                 "INSERT INTO attack_logs (ip_address, request_path, matched_rule) VALUES (?, ?, ?)",
@@ -129,8 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await;
 
             match insert_result {
-                Ok(_) => println!("💾 拦截日志已落盘 -> IP: {}", log.ip),
-                Err(e) => eprintln!("❌ 日志入库失败: {}", e),
+                Ok(_) => log_success!("DAEMON_LOG", "拦截日志已落盘 -> IP: {}", log.ip),
+                Err(e) => log_error!("DAEMON_LOG", "拦截日志入库失败: {}", e),
             }
         }
     });
@@ -138,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 10. 后台任务：访问日志批量落盘
     let access_pool = pool.clone();
     tokio::spawn(async move {
-        println!("📊 访问日志批量落盘守护进程已启动...");
+        log_daemon!("DAEMON", "访问日志批量落盘守护进程已启动...");
         let mut batch: Vec<AccessLog> = Vec::with_capacity(config::ACCESS_LOG_BATCH_SIZE);
         loop {
             let timeout = tokio::time::sleep(std::time::Duration::from_millis(
@@ -197,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             query.push_str(&values.join(","));
 
             if let Err(e) = sqlx::query(&query).execute(&access_pool).await {
-                eprintln!("❌ 访问日志批量入库失败: {}", e);
+                log_error!("DAEMON_LOG", "访问日志批量入库失败: {}", e);
             }
             batch.clear();
         }
@@ -209,7 +255,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         api::start_admin_server(state_for_api).await;
     });
 
-    // 12. 启动 WAF 代理 (主线程阻塞)
+    // 11.5 启动负载均衡健康侦测协程
+    let state_for_health = state.clone();
+    tokio::spawn(async move {
+        proxy::health::start_health_checker(state_for_health).await;
+    });
+
+    // 12.0 启动 TLS HTTPS 代理 (如果配置了证书)
+    if let (Ok(cert), Ok(key)) = (std::env::var("TLS_CERT_PATH"), std::env::var("TLS_KEY_PATH")) {
+        if !cert.is_empty() && !key.is_empty() {
+            let port = std::env::var("TLS_PORT").unwrap_or_else(|_| "443".to_string()).parse::<u16>().unwrap_or(443);
+            let state_for_tls = state.clone();
+            tokio::spawn(async move {
+                proxy::tls::start_tls_proxy_server(state_for_tls, &cert, &key, port).await;
+            });
+        }
+    }
+
+    // 12. 启动 WAF HTTP 代理 (主线程阻塞)
     proxy::start_proxy_server(state).await;
 
     Ok(())

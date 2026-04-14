@@ -1,7 +1,7 @@
 use super::handler::RequestContext;
 use super::response::*;
 use crate::config;
-use crate::state::{AppState, AttackLog};
+use crate::state::{AppState, AttackLog, WafRule};
 use chrono::Local;
 use http_body_util::{Either, Full};
 use hyper::body::{Bytes, Incoming};
@@ -69,7 +69,7 @@ pub fn check_deadlock(
 }
 
 /// Stage 1: 惩罚盒子检查
-pub fn check_penalty(
+pub async fn check_penalty(
     ctx: &RequestContext,
     state: &AppState,
 ) -> Option<Response<Either<Incoming, Full<Bytes>>>> {
@@ -77,7 +77,9 @@ pub fn check_penalty(
     println!("🤖 IP {} 当前惩罚分：{}", ctx.ip, current_penalty);
 
     if current_penalty >= config::PENALTY_BAN_SCORE {
+        let custom_page = state.custom_block_page.read().await.clone();
         let html = render_error_page(
+            Some(&custom_page),
             403,
             "ACCESS DENIED",
             "您的 IP 因存在严重或频繁的恶意扫描行为，已被防御矩阵自动拉入黑名单。",
@@ -100,7 +102,7 @@ pub fn check_rate_limit(
     let count = state.rate_limiter.get(&ctx.ip).unwrap_or(0) + 1;
     state.rate_limiter.insert(ctx.ip.clone(), count);
 
-    if count <= config::RATE_LIMIT_THRESHOLD || is_verified {
+    if count <= config::RATE_LIMIT_THRESHOLD as u64 || is_verified {
         return None;
     }
 
@@ -123,6 +125,22 @@ pub fn check_rate_limit(
     }
 }
 
+/// 辅助匹配函数
+fn match_rule_logic(rule: &WafRule, target: &str) -> bool {
+    let trg = target.to_lowercase(); // contains & exact 通常忽略大小写比较直观
+    match rule.match_type.as_str() {
+        "Exact" => trg == rule.keyword.to_lowercase(),
+        "Regex" => {
+            if let Some(re) = &rule.compiled_regex {
+                re.is_match(target) // 正则保留原始大小写，给正则本身留出灵活性 (?i)
+            } else {
+                false
+            }
+        }
+        _ => trg.contains(&rule.keyword.to_lowercase()), // 默认 Contains
+    }
+}
+
 /// Stage 3: WAF 关键词规则匹配
 /// 返回 None 表示未命中规则（安全请求）
 pub async fn check_waf_rules(
@@ -130,16 +148,35 @@ pub async fn check_waf_rules(
     state: &AppState,
 ) -> Option<Response<Either<Incoming, Full<Bytes>>>> {
     let rules = state.rules.read().await;
-    let mut hit_rule = String::new();
+    let mut hit_rule_keyword = String::new();
+
     for rule in rules.iter() {
-        if ctx.path_query.to_lowercase().contains(rule) {
-            hit_rule = rule.clone();
+        let is_hit = match rule.target_field.as_str() {
+            "URL" => match_rule_logic(rule, &ctx.path_query),
+            "User-Agent" => match_rule_logic(rule, &ctx.user_agent),
+            "Header" => {
+                let mut hit = false;
+                for (k, v) in ctx.raw_headers.iter() {
+                    let combined = format!("{}: {:?}", k, v);
+                    if match_rule_logic(rule, &combined) {
+                        hit = true;
+                        break;
+                    }
+                }
+                hit
+            }
+            "Body" => false, // TODO: 需要在 handler 缓冲 body 流，目前反向代理以流式流出为主，暂不拦截体
+            _ => match_rule_logic(rule, &ctx.path_query), // 默认降级匹配 URL
+        };
+
+        if is_hit {
+            hit_rule_keyword = rule.keyword.clone();
             break;
         }
     }
     drop(rules);
 
-    if hit_rule.is_empty() {
+    if hit_rule_keyword.is_empty() {
         return None;
     }
 
@@ -150,18 +187,20 @@ pub async fn check_waf_rules(
 
     println!(
         "❌ 拦截攻击！IP: {}, 惩罚分: {}/100, 规则: {}",
-        ctx.ip, new_penalty, hit_rule
+        ctx.ip, new_penalty, hit_rule_keyword
     );
 
     let log = AttackLog {
         time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         ip: ctx.ip_addr,
         path: ctx.path_query.clone(),
-        matched_rule: hit_rule,
+        matched_rule: hit_rule_keyword,
     };
     let _ = state.log_tx.send(log).await;
 
+    let custom_page = state.custom_block_page.read().await.clone();
     let html = render_error_page(
+        Some(&custom_page),
         403,
         "REQUEST BLOCKED",
         "网关检测到您的请求中包含非法的参数或恶意代码特征，请求已被截断。",

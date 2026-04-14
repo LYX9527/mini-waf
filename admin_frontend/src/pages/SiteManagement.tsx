@@ -13,12 +13,17 @@ interface RouteItem {
 
 type HealthStatus = 'unknown' | 'healthy' | 'unhealthy'
 
+interface HealthInfo {
+  status: HealthStatus
+  latency?: number
+}
+
 export default function SiteManagement() {
   const [routes, setRoutes] = useState<RouteItem[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
-  const [healthStatus, setHealthStatus] = useState<Record<string, HealthStatus>>({})
+  const [healthStatus, setHealthStatus] = useState<Record<string, HealthInfo>>({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
 
   const fetchRoutes = async () => {
@@ -47,13 +52,23 @@ export default function SiteManagement() {
     }
   }
 
-  const handleDelete = async (prefix: string) => {
+  const handleDisable = async (prefix: string) => {
     try {
-      await api.delete('/routes', { data: { path_prefix: prefix } })
+      await api.post('/routes/disable', { path_prefix: prefix })
       message.success('路由已停用')
       fetchRoutes()
     } catch (e: any) {
       message.error(e.response?.data?.message || '停用失败')
+    }
+  }
+
+  const handleRealDelete = async (prefix: string) => {
+    try {
+      await api.delete('/routes', { data: { path_prefix: prefix } })
+      message.success('路由已彻底删除')
+      fetchRoutes()
+    } catch (e: any) {
+      message.error(e.response?.data?.message || '删除失败')
     }
   }
 
@@ -73,10 +88,13 @@ export default function SiteManagement() {
       const res = await api.post('/routes/health-check', { upstream })
       setHealthStatus((prev) => ({
         ...prev,
-        [prefix]: res.data.reachable ? 'healthy' : 'unhealthy',
+        [prefix]: {
+          status: res.data.reachable ? 'healthy' : 'unhealthy',
+          latency: res.data.latency_ms,
+        },
       }))
     } catch {
-      setHealthStatus((prev) => ({ ...prev, [prefix]: 'unhealthy' }))
+      setHealthStatus((prev) => ({ ...prev, [prefix]: { status: 'unhealthy' } }))
     } finally {
       setChecking((prev) => ({ ...prev, [prefix]: false }))
     }
@@ -102,13 +120,13 @@ export default function SiteManagement() {
     if (record.route_type === 'static') {
       return <Badge color="#8b949e" text={<span style={{ color: '#8b949e' }}>静态</span>} />
     }
-    const status = healthStatus[record.path_prefix] || 'unknown'
+    const info = healthStatus[record.path_prefix] || { status: 'unknown' }
     const config: Record<HealthStatus, { color: string; text: string }> = {
-      healthy: { color: '#52c41a', text: '正常' },
+      healthy: { color: '#52c41a', text: info.latency !== undefined ? `正常 (${info.latency}ms)` : '正常' },
       unhealthy: { color: '#f5222d', text: '异常' },
       unknown: { color: '#8b949e', text: '未知' },
     }
-    const c = config[status]
+    const c = config[info.status]
     return <Badge color={c.color} text={<span style={{ color: c.color }}>{c.text}</span>} />
   }
 
@@ -150,7 +168,7 @@ export default function SiteManagement() {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 300,
       render: (_: any, record: RouteItem) => (
         <div style={{ display: 'flex', gap: 8 }}>
           {record.route_type === 'proxy' && (
@@ -168,10 +186,13 @@ export default function SiteManagement() {
               启用
             </Button>
           ) : (
-            <Popconfirm title="确定停用此路由？" onConfirm={() => handleDelete(record.path_prefix)}>
-              <Button size="small" danger icon={<DeleteOutlined />}>停用</Button>
+            <Popconfirm title="确定停用此路由？" onConfirm={() => handleDisable(record.path_prefix)}>
+              <Button size="small" type="dashed">停用</Button>
             </Popconfirm>
           )}
+          <Popconfirm title="确定要彻底删除此路由吗？关联记录将丢失。" onConfirm={() => handleRealDelete(record.path_prefix)}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </div>
       ),
     },

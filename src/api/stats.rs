@@ -185,7 +185,7 @@ pub async fn get_top_referers(
     Json(serde_json::json!({ "data": data }))
 }
 
-/// GET /api/v1/stats/ip-geo — IP 地理位置统计（返回 IP + 请求数，前端通过 ip-api 查询地理信息）
+/// GET /api/v1/stats/ip-geo — IP 地理位置统计（直接通过本地 MMDB 解析）
 pub async fn get_ip_geo(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -201,9 +201,42 @@ pub async fn get_ip_geo(
     let data: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
+            let ip_str: String = r.get("ip_address");
+            let count: i64 = r.get("cnt");
+            
+            let mut lat: Option<f64> = None;
+            let mut lng: Option<f64> = None;
+            let mut country: Option<String> = None;
+            let mut city: Option<String> = None;
+
+            if let Some(ref db) = state.geo_db {
+                if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                    if let Ok(city_data) = db.lookup::<maxminddb::geoip2::City>(ip) {
+                        if let Some(ref loc) = city_data.location {
+                            lat = loc.latitude;
+                            lng = loc.longitude;
+                        }
+                        if let Some(ref c) = city_data.country {
+                            country = c.iso_code.map(|s| s.to_string());
+                        }
+                        if let Some(ref c) = city_data.city {
+                            if let Some(ref names) = c.names {
+                                city = names.get("zh-CN")
+                                    .or_else(|| names.get("en"))
+                                    .map(|s| s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             serde_json::json!({
-                "ip": r.get::<String, _>("ip_address"),
-                "count": r.get::<i64, _>("cnt"),
+                "ip": ip_str,
+                "count": count,
+                "lat": lat,
+                "lng": lng,
+                "country": country,
+                "city": city,
             })
         })
         .collect();

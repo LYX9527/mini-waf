@@ -20,10 +20,12 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         // WAF 规则
         .route("/rules", get(routes::get_rules))
         .route("/rules", post(routes::add_rule))
+        .route("/rules", delete(routes::delete_rule))
         // 路由管理
         .route("/routes", get(routes::get_routes))
         .route("/routes", post(routes::add_route))
-        .route("/routes", delete(routes::delete_route))
+        .route("/routes", delete(routes::real_delete_route))
+        .route("/routes/disable", post(routes::disable_route))
         .route("/routes/enable", post(routes::enable_route))
         .route("/routes/health-check", post(routes::health_check_route))
         // 统计面板
@@ -67,14 +69,11 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         .with_state(state);
 
     let listener = TcpListener::bind(config::ADMIN_ADDR).await.unwrap();
-    println!(
-        "⚙️ 管理控制台启动成功，监听 http://{}",
-        config::ADMIN_ADDR
-    );
-    println!("   API 端点: http://{}/api/v1/", config::ADMIN_ADDR);
-    println!("   管理面板: http://{}/", config::ADMIN_ADDR);
+    crate::log_daemon!("ADMIN_UI", "管理控制台启动成功，监听 http://{}", config::ADMIN_ADDR);
+    crate::log_daemon!("ADMIN_UI", "   API 端点: http://{}/api/v1/", config::ADMIN_ADDR);
+    crate::log_daemon!("ADMIN_UI", "   管理面板: http://{}/", config::ADMIN_ADDR);
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("管理 API 运行异常: {}", e);
+        crate::log_error!("ADMIN_UI", "管理 API 运行异常: {}", e);
     }
 }

@@ -151,7 +151,9 @@ pub async fn handle_request(
         if blacklist.contains(&ctx.ip) {
             drop(blacklist);
             state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+            let custom_page = state.custom_block_page.read().await.clone();
             let html = render_error_page(
+                Some(&custom_page),
                 403,
                 "ACCESS DENIED",
                 "您的 IP 已被管理员加入黑名单。",
@@ -162,6 +164,30 @@ pub async fn handle_request(
             return create_response(html, StatusCode::FORBIDDEN);
         }
         drop(blacklist);
+
+        // Stage -0.5: Geo-Blocking
+        if let Some(ref db) = state.geo_db {
+            if let Ok(country) = db.lookup::<maxminddb::geoip2::Country>(ctx.ip_addr.ip()) {
+                if let Some(iso_code) = country.country.and_then(|c| c.iso_code) {
+                    let blocked_countries = state.geo_blocked_countries.read().await;
+                    if blocked_countries.contains(iso_code) {
+                        drop(blocked_countries);
+                        state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+                        let custom_page = state.custom_block_page.read().await.clone();
+                        let html = render_error_page(
+                            Some(&custom_page),
+                            403,
+                            "GEO BLOCKED",
+                            &format!("根据访问访问控制策略，您所在的地理区域（{}）已被拒绝访问。", iso_code),
+                            "#ff4d4f",
+                            &ctx.ip,
+                        );
+                        send_access_log(&state, &ctx, 403, true, Some(format!("geo_blocked_{}", iso_code)));
+                        return create_response(html, StatusCode::FORBIDDEN);
+                    }
+                }
+            }
+        }
     }
 
     // Stage 0: UA 嗅探
@@ -195,7 +221,7 @@ pub async fn handle_request(
     // 已验证用户请求静态资源时，跳过惩罚、限流、WAF 规则检查
     if !is_verified || !is_static_asset {
         // Stage 1: 惩罚盒子
-        if let Some(resp) = guard::check_penalty(&ctx, &state) {
+        if let Some(resp) = guard::check_penalty(&ctx, &state).await {
             state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
             send_access_log(&state, &ctx, 403, true, Some("penalty_ban".to_string()));
             return Ok(resp);

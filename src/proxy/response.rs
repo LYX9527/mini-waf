@@ -20,6 +20,7 @@ pub fn create_response(html: String, status: StatusCode) -> ProxyResponse {
 
 /// 统一的错误/拦截页面
 pub fn render_error_page(
+    custom_block_page: Option<&str>,
     status_code: u16,
     title: &str,
     message: &str,
@@ -27,6 +28,17 @@ pub fn render_error_page(
     client_ip: &str,
 ) -> String {
     let trace_id = format!("WAF-{:X}", Utc::now().timestamp_nanos_opt().unwrap_or(0));
+
+    if let Some(custom) = custom_block_page {
+        if !custom.trim().is_empty() {
+            return custom
+                .replace("{status_code}", &status_code.to_string())
+                .replace("{title}", title)
+                .replace("{message}", message)
+                .replace("{client_ip}", client_ip)
+                .replace("{trace_id}", &trace_id);
+        }
+    }
 
     format!(
         r#"<!DOCTYPE html>
