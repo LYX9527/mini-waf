@@ -18,6 +18,16 @@ pub struct DeleteRuleRequest {
 }
 
 #[derive(Deserialize)]
+pub struct EditRouteRequest {
+    pub old_path_prefix: String,
+    pub path_prefix: String,
+    pub upstream: String,
+    pub route_type: String, // "proxy" 或 "static"
+    #[serde(default)]
+    pub is_spa: bool,
+}
+
+#[derive(Deserialize)]
 pub struct AddRouteRequest {
     pub path_prefix: String,
     pub upstream: String,
@@ -327,5 +337,65 @@ pub async fn health_check_route(
         Err(_) => {
             Json(serde_json::json!({ "reachable": false, "error": "连接超时 (3s)" }))
         }
+    }
+}
+
+/// PUT /routes/edit: 编辑现有路由
+pub async fn edit_route(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EditRouteRequest>,
+) -> Json<serde_json::Value> {
+    let is_static = payload.route_type == "static";
+    let rt = if is_static { "static" } else { "proxy" };
+
+    if is_static && !std::path::Path::new(&payload.upstream).is_dir() {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("静态资源目录不存在: {}", payload.upstream)
+        }));
+    }
+
+    let update_result = sqlx::query!(
+        "UPDATE routes SET path_prefix = ?, upstream = ?, route_type = ?, is_spa = ? WHERE path_prefix = ?",
+        payload.path_prefix,
+        payload.upstream,
+        rt,
+        payload.is_spa,
+        payload.old_path_prefix
+    )
+    .execute(&state.db_pool)
+    .await;
+
+    match update_result {
+        Ok(result) if result.rows_affected() > 0 => {
+            let mut routes = state.routes.write().await;
+            
+            // Remove old route
+            routes.retain(|r| r.path_prefix != payload.old_path_prefix);
+            
+            // Insert new route
+            let new_route = Route {
+                path_prefix: payload.path_prefix.clone(),
+                upstream: payload.upstream,
+                route_type: if is_static { RouteType::Static } else { RouteType::Proxy },
+                is_spa: payload.is_spa,
+                rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+            routes.push(new_route);
+            routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+            
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("路由 '{}' 已更新", payload.path_prefix)
+            }))
+        }
+        Ok(_) => Json(serde_json::json!({
+            "status": "error",
+            "message": "未找到要更新的路由记录"
+        })),
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": format!("路由更新失败: {}", e)
+        })),
     }
 }

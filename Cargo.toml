@@ -23,11 +23,16 @@ serde_json = "1.0"
 # 新增：强大的异步数据库驱动 sqlx
 sqlx = { version = "0.8.6", features = ["mysql", "runtime-tokio-rustls", "chrono"] }
 dotenvy = "0.15"
+
+# 鉴权系统
+bcrypt = "0.19.0"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+axum-extra = { version = "0.9.3", features = ["typed-header"] }
 moka = { version = "0.12", features = ["sync"] }
 uuid = { version = "1.8", features = ["v4"] }
 tower-http = { version = "0.6", features = ["fs"] }
 regex = "1.12.3"
-maxminddb = "0.23.0"
+maxminddb = "=0.23.0"
 tokio-rustls = "0.26.4"
 rustls = "0.23.38"
 rustls-pemfile = "2.2.0"

@@ -7,9 +7,11 @@ import {
   SettingOutlined,
   SecurityScanOutlined,
   UnorderedListOutlined,
+  PoweroffOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import { Modal } from 'antd'
 
 const { Sider, Header, Content } = Layout
 
@@ -41,6 +43,44 @@ export default function MainLayout() {
       setOpenKeys(['/logs'])
     }
   }, [])
+
+  const lastActivityTime = useRef<number>(Date.now())
+
+  // 设置自动登出逻辑
+  useEffect(() => {
+    const handleActivity = () => {
+      lastActivityTime.current = Date.now()
+    }
+
+    const events = ['mousemove', 'keydown', 'wheel', 'click']
+    events.forEach(evt => window.addEventListener(evt, handleActivity))
+
+    const intervalId = setInterval(() => {
+      if (Date.now() - lastActivityTime.current > 120_000) {
+        clearInterval(intervalId)
+        handleLogout(true)
+      }
+    }, 1000)
+
+    return () => {
+      events.forEach(evt => window.removeEventListener(evt, handleActivity))
+      clearInterval(intervalId)
+    }
+  }, [])
+
+  const handleLogout = (isAuto = false) => {
+    localStorage.removeItem('mini_waf_token')
+    if (isAuto) {
+      Modal.warning({
+        title: '登录已超时',
+        content: '由于您超过 2 分钟未操作，出于安全强制审计策略已自动切断会话，请重新登录。',
+        okText: '重新登录',
+        onOk: () => navigate('/login')
+      })
+    } else {
+      navigate('/login')
+    }
+  }
 
   const selectedKey = location.pathname
 
@@ -92,12 +132,19 @@ export default function MainLayout() {
             borderBottom: '1px solid #21262d',
             padding: '0 24px',
             display: 'flex',
-            alignItems: 'center',
+            justifyContent: 'space-between',
           }}
         >
           <span style={{ color: '#8b949e', fontSize: 14 }}>
              管理控制台
           </span>
+          <div 
+            style={{ color: '#f85149', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 14 }}
+            onClick={() => handleLogout(false)}
+          >
+            <PoweroffOutlined />
+            <span>退出系统</span>
+          </div>
         </Header>
         <Content
           style={{

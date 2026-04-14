@@ -22,6 +22,7 @@ export default function SiteManagement() {
   const [routes, setRoutes] = useState<RouteItem[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
+  const [editingRoute, setEditingRoute] = useState<string | null>(null)
   const [form] = Form.useForm()
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthInfo>>({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
@@ -39,17 +40,34 @@ export default function SiteManagement() {
 
   useEffect(() => { fetchRoutes() }, [])
 
-  const handleAdd = async () => {
+  const handleSubmit = async () => {
     try {
       const values = await form.validateFields()
-      await api.post('/routes', values)
-      message.success('路由添加成功')
+      if (editingRoute) {
+        await api.put('/routes/edit', { ...values, old_path_prefix: editingRoute })
+        message.success('路由更新成功')
+      } else {
+        await api.post('/routes', values)
+        message.success('路由添加成功')
+      }
       setModalOpen(false)
+      setEditingRoute(null)
       form.resetFields()
       fetchRoutes()
     } catch (e: any) {
-      message.error(e.response?.data?.message || '添加失败')
+      message.error(e.response?.data?.message || '保存失败')
     }
+  }
+
+  const handleEditClick = (record: RouteItem) => {
+    form.setFieldsValue({
+      path_prefix: record.path_prefix,
+      route_type: record.route_type,
+      upstream: record.upstream,
+      is_spa: record.is_spa,
+    })
+    setEditingRoute(record.path_prefix)
+    setModalOpen(true)
   }
 
   const handleDisable = async (prefix: string) => {
@@ -168,7 +186,7 @@ export default function SiteManagement() {
     {
       title: '操作',
       key: 'action',
-      width: 300,
+      width: 400,
       render: (_: any, record: RouteItem) => (
         <div style={{ display: 'flex', gap: 8 }}>
           {record.route_type === 'proxy' && (
@@ -190,6 +208,7 @@ export default function SiteManagement() {
               <Button size="small" type="dashed">停用</Button>
             </Popconfirm>
           )}
+          <Button size="small" onClick={() => handleEditClick(record)}>编辑</Button>
           <Popconfirm title="确定要彻底删除此路由吗？关联记录将丢失。" onConfirm={() => handleRealDelete(record.path_prefix)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -221,11 +240,11 @@ export default function SiteManagement() {
       />
 
       <Modal
-        title="添加路由"
+        title={editingRoute ? "编辑路由" : "添加路由"}
         open={modalOpen}
-        onOk={handleAdd}
-        onCancel={() => { setModalOpen(false); form.resetFields() }}
-        okText="添加"
+        onOk={handleSubmit}
+        onCancel={() => { setModalOpen(false); setEditingRoute(null); form.resetFields() }}
+        okText="保存"
         cancelText="取消"
       >
         <Form form={form} layout="vertical" initialValues={{ route_type: 'proxy', is_spa: false }}>

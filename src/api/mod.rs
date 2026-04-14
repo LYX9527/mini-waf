@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod ip_lists;
 pub mod logs;
 pub mod routes;
@@ -8,7 +9,7 @@ use crate::config;
 use crate::state::AppState;
 use axum::{
     routing::{delete, get, post, put},
-    Router,
+    Router, middleware,
 };
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -24,6 +25,7 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         // 路由管理
         .route("/routes", get(routes::get_routes))
         .route("/routes", post(routes::add_route))
+        .route("/routes/edit", put(routes::edit_route))
         .route("/routes", delete(routes::real_delete_route))
         .route("/routes/disable", post(routes::disable_route))
         .route("/routes/enable", post(routes::enable_route))
@@ -55,7 +57,11 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         )
         // 系统设置
         .route("/settings", get(settings::get_settings))
-        .route("/settings", put(settings::update_settings));
+        .route("/settings", put(settings::update_settings))
+        // 认证鉴权
+        .route("/auth/check-init", get(auth::check_init))
+        .route("/auth/init", post(auth::init_admin))
+        .route("/auth/login", post(auth::login));
 
     // 前端静态文件目录
     let frontend_dir = "admin_frontend/dist";
@@ -63,6 +69,7 @@ pub async fn start_admin_server(state: Arc<AppState>) {
 
     let app = Router::new()
         .nest("/api/v1", api_router)
+        .layer(middleware::from_fn(auth::auth_middleware))
         .fallback_service(
             ServeDir::new(frontend_dir).not_found_service(fallback),
         )

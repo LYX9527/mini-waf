@@ -29,6 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 自动迁移：访问日志增加 IP 归属地字段
     let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN country VARCHAR(10) DEFAULT NULL;").execute(&pool).await;
     let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN city VARCHAR(100) DEFAULT NULL;").execute(&pool).await;
+    // 自动迁移：管理员表
+    let _ = sqlx::query(include_str!("../migrations/004_admin_users.sql")).execute(&pool).await;
 
     // 2. 加载 WAF 防御规则
     let rule_records = sqlx::query!("SELECT keyword, target_field, match_type FROM rules WHERE status = 1")
