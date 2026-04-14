@@ -2,3 +2,4 @@
 .claude
 admin_frontend/node_modules
 admin_frontend/dist
+.env
