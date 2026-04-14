@@ -30,7 +30,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          # Increase local build max timeout constraints for Rust cross-compilation
           buildkitd-flags: --debug
 
       - name: Log in to the Container registry
@@ -55,9 +54,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 开启 GitHub Actions 的缓存机制，加速后续编译
           cache-from: type=gha
           cache-to: type=gha,mode=max
