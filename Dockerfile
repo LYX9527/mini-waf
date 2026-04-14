@@ -59,7 +59,6 @@ COPY --from=backend-builder /app/target/release/mini_waf /usr/local/bin/mini_waf
 COPY --from=backend-builder /app/migrations ./migrations
 
 # 复制环境变量文件和数据库
-COPY --from=backend-builder /app/.env ./
 COPY --from=backend-builder /app/data ./data
 
 # 从前端提取构建好的静态资源
