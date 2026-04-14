@@ -2,6 +2,8 @@ use crate::state::{AppState, Route, RouteType};
 use axum::{extract::State, Json};
 use serde::Deserialize;
 use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 
 #[derive(Deserialize)]
 pub struct AddRuleRequest {
@@ -160,5 +162,34 @@ pub async fn delete_route(
             "status": "error",
             "message": format!("路由停用失败: {}", e)
         })),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct HealthCheckRequest {
+    pub upstream: String,
+}
+
+/// POST /routes/health-check: 测试反向代理目标的连通性
+pub async fn health_check_route(
+    Json(payload): Json<HealthCheckRequest>,
+) -> Json<serde_json::Value> {
+    // 3 秒超时尝试 TCP 连接
+    let result = timeout(
+        Duration::from_secs(3),
+        TcpStream::connect(&payload.upstream),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(_stream)) => {
+            Json(serde_json::json!({ "reachable": true }))
+        }
+        Ok(Err(e)) => {
+            Json(serde_json::json!({ "reachable": false, "error": e.to_string() }))
+        }
+        Err(_) => {
+            Json(serde_json::json!({ "reachable": false, "error": "连接超时 (3s)" }))
+        }
     }
 }

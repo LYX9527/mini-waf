@@ -1,12 +1,13 @@
-use super::{challenge, guard, router};
 use super::response::*;
-use crate::state::AppState;
+use super::{challenge, guard, router};
+use crate::state::{AccessLog, AppState};
+use http_body_util::{Either, Full};
+use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::header::HeaderValue;
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use http_body_util::{Either, Full};
-use hyper::body::Bytes;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// 请求上下文 —— 从原始请求中提取的常用字段，避免重复解析
@@ -44,8 +45,6 @@ impl RequestContext {
             .unwrap_or("")
             .to_lowercase();
 
-        // target_url: 用于质询页面的重定向目标
-        // 注意：仅当请求的是 WAF 内部页面时才回退到 "/"
         let target_url = if path_query.starts_with("/.waf") || path_query == "/favicon.ico" {
             "/"
         } else {
@@ -73,12 +72,10 @@ impl RequestContext {
 
 /// 判断路径是否为常见的静态资源文件（前端碎片文件）
 fn is_static_asset_path(path: &str) -> bool {
-    // 取最后一个 '.' 之后的扩展名
     let ext = match path.rfind('.') {
         Some(pos) => &path[pos + 1..],
         None => return false,
     };
-    // 截取到 '?' 或 '#' 之前
     let ext = ext.split(|c| c == '?' || c == '#').next().unwrap_or(ext);
     matches!(
         ext,
@@ -90,6 +87,20 @@ fn is_static_asset_path(path: &str) -> bool {
     )
 }
 
+/// 发送访问日志
+fn send_access_log(state: &AppState, ctx: &RequestContext, status_code: u16, is_blocked: bool, matched_rule: Option<String>) {
+    let log = AccessLog {
+        ip: ctx.ip.clone(),
+        path: ctx.path_query.clone(),
+        method: ctx.method.to_string(),
+        status_code,
+        is_blocked,
+        matched_rule,
+        user_agent: ctx.user_agent.clone(),
+    };
+    let _ = state.access_log_tx.try_send(log);
+}
+
 /// 请求处理管线 —— 按安全关卡顺序依次检查
 pub async fn handle_request(
     req: Request<Incoming>,
@@ -98,10 +109,43 @@ pub async fn handle_request(
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
     let ctx = RequestContext::new(&req, remote_addr);
 
+    // 原子计数器：总请求数 +1
+    state.counters.total_requests_today.fetch_add(1, Ordering::Relaxed);
+
+    // Stage -1: IP 黑白名单检查
+    {
+        let whitelist = state.ip_whitelist.read().await;
+        if whitelist.contains(&ctx.ip) {
+            drop(whitelist);
+            // 白名单直接跳过所有安全检查
+            send_access_log(&state, &ctx, 200, false, None);
+            return router::route_and_proxy(req, &ctx, &state).await;
+        }
+        drop(whitelist);
+
+        let blacklist = state.ip_blacklist.read().await;
+        if blacklist.contains(&ctx.ip) {
+            drop(blacklist);
+            state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+            let html = render_error_page(
+                403,
+                "ACCESS DENIED",
+                "您的 IP 已被管理员加入黑名单。",
+                "#ff0033",
+                &ctx.ip,
+            );
+            send_access_log(&state, &ctx, 403, true, Some("ip_blacklist".to_string()));
+            return create_response(html, StatusCode::FORBIDDEN);
+        }
+        drop(blacklist);
+    }
+
     // Stage 0: UA 嗅探
     if guard::is_bot(&ctx) {
         println!("🛡️ 发现可疑 UA，强制触发 JS 浏览器质询: {}", ctx.user_agent);
+        state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
         let html = render_js_challenge_page(&ctx.ip, &ctx.target_url);
+        send_access_log(&state, &ctx, 503, true, Some("bot_detection".to_string()));
         return create_response(html, StatusCode::SERVICE_UNAVAILABLE);
     }
 
@@ -110,35 +154,53 @@ pub async fn handle_request(
 
     // Stage 0.75: WAF 内部端点 (质询提交)
     if ctx.is_waf_endpoint() {
-        return Ok(challenge::handle_challenge_endpoint(&ctx, req, &state).await);
+        let resp = challenge::handle_challenge_endpoint(&ctx, req, &state).await;
+        send_access_log(&state, &ctx, resp.status().as_u16(), false, None);
+        return Ok(resp);
     }
 
     // Stage 0.9: 质询死锁检测
     if let Some(resp) = guard::check_deadlock(&ctx, is_verified, &state) {
+        state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+        send_access_log(&state, &ctx, resp.status().as_u16(), true, Some("challenge_deadlock".to_string()));
         return Ok(resp);
     }
 
-    // 判断是否为静态资源请求（常见的前端碎片文件扩展名）
     let is_static_asset = is_static_asset_path(&ctx.path);
 
     // 已验证用户请求静态资源时，跳过惩罚、限流、WAF 规则检查
     if !is_verified || !is_static_asset {
         // Stage 1: 惩罚盒子
         if let Some(resp) = guard::check_penalty(&ctx, &state) {
+            state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+            send_access_log(&state, &ctx, 403, true, Some("penalty_ban".to_string()));
             return Ok(resp);
         }
 
         // Stage 2: 限流
         if let Some(resp) = guard::check_rate_limit(&ctx, is_verified, &state) {
+            state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+            send_access_log(&state, &ctx, 429, true, Some("rate_limit".to_string()));
             return Ok(resp);
         }
 
         // Stage 3: WAF 规则匹配
         if let Some(resp) = guard::check_waf_rules(&ctx, &state).await {
+            state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+            send_access_log(&state, &ctx, 403, true, None); // matched_rule 在 guard 内部已记录
             return Ok(resp);
         }
     }
 
-    // Stage 4+5: 路由匹配 + 反向代理
-    router::route_and_proxy(req, &ctx, &state).await
+    // Stage 4+5: 路由匹配 + 反向代理/静态文件
+    let result = router::route_and_proxy(req, &ctx, &state).await;
+    match &result {
+        Ok(resp) => {
+            send_access_log(&state, &ctx, resp.status().as_u16(), false, None);
+        }
+        Err(_) => {
+            send_access_log(&state, &ctx, 502, false, None);
+        }
+    }
+    result
 }

@@ -1,6 +1,7 @@
 use mini_waf::{api, config, proxy, state};
 use sqlx::mysql::MySqlPoolOptions;
-use state::{AppState, AttackLog, Route, RouteType};
+use state::{AccessLog, AppState, AttackLog, RealtimeCounters, Route, RouteType};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
@@ -58,10 +59,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         static_count
     );
 
-    // 4. 创建异步日志通道
+    // 4. 加载 IP 黑白名单到内存
+    let blacklist_records = sqlx::query!("SELECT ip_address FROM ip_blacklist")
+        .fetch_all(&pool)
+        .await?;
+    let initial_blacklist: HashSet<String> = blacklist_records
+        .into_iter()
+        .map(|r| r.ip_address)
+        .collect();
+    println!("🚫 已加载 {} 条 IP 黑名单", initial_blacklist.len());
+
+    let whitelist_records = sqlx::query!("SELECT ip_address FROM ip_whitelist")
+        .fetch_all(&pool)
+        .await?;
+    let initial_whitelist: HashSet<String> = whitelist_records
+        .into_iter()
+        .map(|r| r.ip_address)
+        .collect();
+    println!("✅ 已加载 {} 条 IP 白名单", initial_whitelist.len());
+
+    // 5. 创建异步日志通道
     let (log_tx, mut log_rx) = mpsc::channel::<AttackLog>(1000);
 
-    // 5. 初始化缓存
+    // 6. 创建访问日志通道
+    let (access_log_tx, mut access_log_rx) = mpsc::channel::<AccessLog>(5000);
+
+    // 7. 初始化缓存
     let rate_limiter = moka::sync::Cache::builder()
         .time_to_live(std::time::Duration::from_secs(config::RATE_LIMIT_WINDOW_SECS))
         .build();
@@ -75,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .time_to_live(std::time::Duration::from_secs(config::TOKEN_TTL_SECS))
         .build();
 
-    // 6. 构建全局状态
+    // 8. 构建全局状态
     let state = Arc::new(AppState {
         rules: RwLock::new(initial_rules),
         routes: RwLock::new(initial_routes),
@@ -85,12 +108,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         penalty_box,
         captcha_answers,
         verified_tokens,
+        ip_blacklist: RwLock::new(initial_blacklist),
+        ip_whitelist: RwLock::new(initial_whitelist),
+        access_log_tx,
+        counters: RealtimeCounters::new(),
     });
 
-    // 7. 后台任务：异步日志落盘
+    // 9. 后台任务：攻击日志落盘
     let log_pool = pool.clone();
     tokio::spawn(async move {
-        println!("📝 异步日志落盘守护进程已启动...");
+        println!("📝 攻击日志落盘守护进程已启动...");
         while let Some(log) = log_rx.recv().await {
             let insert_result = sqlx::query!(
                 "INSERT INTO attack_logs (ip_address, request_path, matched_rule) VALUES (?, ?, ?)",
@@ -108,13 +135,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
-    // 8. 启动管理 API
+    // 10. 后台任务：访问日志批量落盘
+    let access_pool = pool.clone();
+    tokio::spawn(async move {
+        println!("📊 访问日志批量落盘守护进程已启动...");
+        let mut batch: Vec<AccessLog> = Vec::with_capacity(config::ACCESS_LOG_BATCH_SIZE);
+        loop {
+            let timeout = tokio::time::sleep(std::time::Duration::from_millis(
+                config::ACCESS_LOG_BATCH_INTERVAL_MS,
+            ));
+            tokio::pin!(timeout);
+
+            loop {
+                tokio::select! {
+                    log_opt = access_log_rx.recv() => {
+                        match log_opt {
+                            Some(log) => {
+                                batch.push(log);
+                                if batch.len() >= config::ACCESS_LOG_BATCH_SIZE {
+                                    break;
+                                }
+                            }
+                            None => return, // channel 关闭
+                        }
+                    }
+                    _ = &mut timeout => {
+                        if !batch.is_empty() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if batch.is_empty() {
+                continue;
+            }
+
+            // 批量 INSERT
+            let mut query = String::from(
+                "INSERT INTO access_logs (ip_address, request_path, method, status_code, is_blocked, matched_rule, user_agent) VALUES ",
+            );
+            let values: Vec<String> = batch
+                .iter()
+                .map(|l| {
+                    format!(
+                        "('{}', '{}', '{}', {}, {}, {}, '{}')",
+                        l.ip.replace('\'', "''"),
+                        l.path.replace('\'', "''").chars().take(2048).collect::<String>(),
+                        l.method,
+                        l.status_code,
+                        if l.is_blocked { 1 } else { 0 },
+                        l.matched_rule
+                            .as_ref()
+                            .map(|r| format!("'{}'", r.replace('\'', "''")))
+                            .unwrap_or_else(|| "NULL".to_string()),
+                        l.user_agent.replace('\'', "''").chars().take(1024).collect::<String>(),
+                    )
+                })
+                .collect();
+            query.push_str(&values.join(","));
+
+            if let Err(e) = sqlx::query(&query).execute(&access_pool).await {
+                eprintln!("❌ 访问日志批量入库失败: {}", e);
+            }
+            batch.clear();
+        }
+    });
+
+    // 11. 启动管理 API
     let state_for_api = state.clone();
     tokio::spawn(async move {
         api::start_admin_server(state_for_api).await;
     });
 
-    // 9. 启动 WAF 代理 (主线程阻塞)
+    // 12. 启动 WAF 代理 (主线程阻塞)
     proxy::start_proxy_server(state).await;
 
     Ok(())

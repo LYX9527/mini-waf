@@ -27,3 +27,7 @@ pub const JS_CHALLENGE_DELAY_MS: u64 = 2500;
 
 // 静态文件服务
 pub const MAX_STATIC_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+
+// 访问日志批量写入
+pub const ACCESS_LOG_BATCH_SIZE: usize = 100;
+pub const ACCESS_LOG_BATCH_INTERVAL_MS: u64 = 1000; // 1 秒

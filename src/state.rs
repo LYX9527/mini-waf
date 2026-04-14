@@ -1,6 +1,9 @@
 use moka::sync::Cache;
 use sqlx::MySqlPool;
+use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicU64;
+use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 
 /// 攻击日志结构体
@@ -35,6 +38,35 @@ pub struct Route {
     pub is_spa: bool, // 仅对 static 有意义
 }
 
+/// 访问日志（所有请求）
+#[derive(Debug)]
+pub struct AccessLog {
+    pub ip: String,
+    pub path: String,
+    pub method: String,
+    pub status_code: u16,
+    pub is_blocked: bool,
+    pub matched_rule: Option<String>,
+    pub user_agent: String,
+}
+
+/// 实时计数器（原子操作，无锁）
+pub struct RealtimeCounters {
+    pub total_requests_today: AtomicU64,
+    pub blocked_requests_today: AtomicU64,
+    pub start_time: Instant,
+}
+
+impl RealtimeCounters {
+    pub fn new() -> Self {
+        Self {
+            total_requests_today: AtomicU64::new(0),
+            blocked_requests_today: AtomicU64::new(0),
+            start_time: Instant::now(),
+        }
+    }
+}
+
 /// WAF 全局共享状态
 pub struct AppState {
     pub rules: RwLock<Vec<String>>,
@@ -45,4 +77,11 @@ pub struct AppState {
     pub penalty_box: Cache<String, u32>,
     pub captcha_answers: Cache<String, (u32, u32)>,
     pub verified_tokens: Cache<String, ClientFingerprint>,
+    // 新增：黑白名单（内存 HashSet，O(1) 查找）
+    pub ip_blacklist: RwLock<HashSet<String>>,
+    pub ip_whitelist: RwLock<HashSet<String>>,
+    // 新增：访问日志通道
+    pub access_log_tx: mpsc::Sender<AccessLog>,
+    // 新增：实时计数器
+    pub counters: RealtimeCounters,
 }
