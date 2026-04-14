@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   mini-waf:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: ghcr.io/liyixing/mini_waf:latest
     container_name: mini-waf
     ports:
       - "48080:48080" # WAF 服务端口
@@ -14,8 +12,6 @@ services:
       - DATABASE_URL=mysql://mini_waf_user:password@mysql:3306/mini_waf
       - JWT_SECRET=super_secret_waf_key_please_change
       - RUST_LOG=info
-    volumes:
-      - ./data:/opt/mini_waf/data
     restart: unless-stopped
     depends_on:
       - mysql
@@ -28,8 +24,6 @@ services:
       - MYSQL_DATABASE=mini_waf
       - MYSQL_USER=mini_waf_user
       - MYSQL_PASSWORD=password
-    ports:
-      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
