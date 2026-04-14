@@ -8,6 +8,7 @@ interface RouteItem {
   upstream: string
   route_type: string
   is_spa: boolean
+  is_active?: boolean
 }
 
 type HealthStatus = 'unknown' | 'healthy' | 'unhealthy'
@@ -52,7 +53,17 @@ export default function SiteManagement() {
       message.success('路由已停用')
       fetchRoutes()
     } catch (e: any) {
-      message.error(e.response?.data?.message || '删除失败')
+      message.error(e.response?.data?.message || '停用失败')
+    }
+  }
+
+  const handleEnable = async (prefix: string) => {
+    try {
+      await api.post('/routes/enable', { path_prefix: prefix })
+      message.success('路由已启用')
+      fetchRoutes()
+    } catch (e: any) {
+      message.error(e.response?.data?.message || '启用失败')
     }
   }
 
@@ -84,11 +95,14 @@ export default function SiteManagement() {
     if (routes.length > 0) checkAllProxy()
   }, [routes])
 
-  const statusDot = (prefix: string, routeType: string) => {
-    if (routeType === 'static') {
+  const statusDot = (record: RouteItem) => {
+    if (record.is_active === false) {
+      return <Badge color="#f5222d" text={<span style={{ color: '#f5222d' }}>已停用</span>} />
+    }
+    if (record.route_type === 'static') {
       return <Badge color="#8b949e" text={<span style={{ color: '#8b949e' }}>静态</span>} />
     }
-    const status = healthStatus[prefix] || 'unknown'
+    const status = healthStatus[record.path_prefix] || 'unknown'
     const config: Record<HealthStatus, { color: string; text: string }> = {
       healthy: { color: '#52c41a', text: '正常' },
       unhealthy: { color: '#f5222d', text: '异常' },
@@ -131,7 +145,7 @@ export default function SiteManagement() {
       title: '状态',
       key: 'status',
       width: 120,
-      render: (_: any, record: RouteItem) => statusDot(record.path_prefix, record.route_type),
+      render: (_: any, record: RouteItem) => statusDot(record),
     },
     {
       title: '操作',
@@ -149,9 +163,15 @@ export default function SiteManagement() {
               测试连通性
             </Button>
           )}
-          <Popconfirm title="确定停用此路由？" onConfirm={() => handleDelete(record.path_prefix)}>
-            <Button size="small" danger icon={<DeleteOutlined />}>停用</Button>
-          </Popconfirm>
+          {record.is_active === false ? (
+            <Button size="small" type="primary" onClick={() => handleEnable(record.path_prefix)}>
+              启用
+            </Button>
+          ) : (
+            <Popconfirm title="确定停用此路由？" onConfirm={() => handleDelete(record.path_prefix)}>
+              <Button size="small" danger icon={<DeleteOutlined />}>停用</Button>
+            </Popconfirm>
+          )}
         </div>
       ),
     },

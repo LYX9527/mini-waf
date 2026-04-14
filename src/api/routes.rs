@@ -60,20 +60,22 @@ pub async fn add_rule(
     }
 }
 
-/// GET /routes: 列出所有活跃路由
+/// GET /routes: 列出所有路由
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let routes = state.routes.read().await;
-    let route_list: Vec<serde_json::Value> = routes
-        .iter()
+    let records = sqlx::query!("SELECT path_prefix, upstream, route_type, is_spa, status FROM routes ORDER BY LENGTH(path_prefix) DESC")
+        .fetch_all(&state.db_pool)
+        .await
+        .unwrap_or_default();
+    
+    let route_list: Vec<serde_json::Value> = records
+        .into_iter()
         .map(|r| {
             serde_json::json!({
                 "path_prefix": r.path_prefix,
                 "upstream": r.upstream,
-                "route_type": match r.route_type {
-                    RouteType::Proxy => "proxy",
-                    RouteType::Static => "static",
-                },
-                "is_spa": r.is_spa,
+                "route_type": r.route_type,
+                "is_spa": r.is_spa != 0,
+                "is_active": r.status == 1,
             })
         })
         .collect();
@@ -161,6 +163,48 @@ pub async fn delete_route(
         Err(e) => Json(serde_json::json!({
             "status": "error",
             "message": format!("路由停用失败: {}", e)
+        })),
+    }
+}
+#[derive(Deserialize)]
+pub struct EnableRouteRequest {
+    pub path_prefix: String,
+}
+
+/// POST /routes/enable: 启用一条路由
+pub async fn enable_route(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EnableRouteRequest>,
+) -> Json<serde_json::Value> {
+    let result = sqlx::query!(
+        "UPDATE routes SET status = 1 WHERE path_prefix = ?",
+        payload.path_prefix
+    )
+    .execute(&state.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE path_prefix = ?", payload.path_prefix).fetch_optional(&state.db_pool).await {
+                let mut routes = state.routes.write().await;
+                if !routes.iter().any(|rt| rt.path_prefix == payload.path_prefix) {
+                    routes.push(Route {
+                        path_prefix: r.path_prefix.clone(),
+                        upstream: r.upstream,
+                        route_type: if r.route_type == "static" { crate::state::RouteType::Static } else { crate::state::RouteType::Proxy },
+                        is_spa: r.is_spa != 0,
+                    });
+                    routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+                }
+            }
+            Json(serde_json::json!({
+                "status": "success",
+                "message": format!("路由 '{}' 已启用", payload.path_prefix)
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "status": "error",
+            "message": format!("路由启用失败: {}", e)
         })),
     }
 }

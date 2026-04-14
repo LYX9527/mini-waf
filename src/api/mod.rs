@@ -24,6 +24,7 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         .route("/routes", get(routes::get_routes))
         .route("/routes", post(routes::add_route))
         .route("/routes", delete(routes::delete_route))
+        .route("/routes/enable", post(routes::enable_route))
         .route("/routes/health-check", post(routes::health_check_route))
         // 统计面板
         .route("/stats/realtime", get(stats::get_realtime_stats))

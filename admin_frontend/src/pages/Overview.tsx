@@ -158,12 +158,10 @@ export default function Overview() {
       { hour: `${h}:00`, type: '拦截', value: today.blocked[i] },
     ]) || []
 
-  const pieData = statusDist
-    .filter((d) => [200, 403, 404, 405, 502].includes(d.status_code))
-    .map((d) => ({
-      type: STATUS_LABELS[d.status_code] || `${d.status_code}`,
-      value: d.count,
-    }))
+  const pieData = statusDist.map((d) => ({
+    type: STATUS_LABELS[d.status_code] || (d.status_code ? d.status_code.toString() : '未知'),
+    value: d.count,
+  }))
 
   const geoMarkers = ipGeoData.filter((d) => d.lat && d.lng)
 
@@ -229,7 +227,7 @@ export default function Overview() {
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
         <Col xs={24} lg={14}>
           <Card title="IP 来源世界地图" style={{ borderColor: '#21262d' }}>
-            <div style={{ height: 360, overflow: 'hidden', borderRadius: 4 }}>
+            <div style={{ height: 320, overflow: 'hidden', borderRadius: 4 }}>
               <ComposableMap
                 projectionConfig={{ rotate: [-10, 0, 0] }}
                 style={{ width: '100%', height: '100%' }}
@@ -286,10 +284,14 @@ export default function Overview() {
               radius={0.8}
               innerRadius={0.5}
               label={{
+                text: 'type',
                 style: { fill: '#c9d1d9', fontSize: 12 },
               }}
+              tooltip={{
+                title: 'type',
+              }}
               legend={{
-                itemName: { style: { fill: '#c9d1d9', fontSize: 12 } },
+                color: { itemName: { style: { fill: '#c9d1d9', fontSize: 12 } } },
               }}
               statistic={{
                 title: { style: { color: '#8b949e' }, content: '总计' },
@@ -332,7 +334,7 @@ export default function Overview() {
           <Card title="Top 5 攻击来源 IP" style={{ borderColor: '#21262d' }}>
             <Column
               data={topIps.map((item) => ({
-                ip: item.ip || 'unknown',
+                ip: item.ip || '未知',
                 count: item.count,
               }))}
               xField="ip"
@@ -355,7 +357,7 @@ export default function Overview() {
           <Card title="Top 5 触发规则" style={{ borderColor: '#21262d' }}>
             <Column
               data={topRules.map((item) => ({
-                rule: item.rule || 'unknown',
+                rule: item.rule || '未知',
                 count: item.count,
               }))}
               xField="rule"

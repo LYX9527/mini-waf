@@ -45,7 +45,7 @@ export default function MainLayout() {
   const selectedKey = location.pathname
 
   return (
-    <Layout style={{ minHeight: '100vh', background: '#0b0f19' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden', background: '#0b0f19' }}>
       <Sider
         width={220}
         theme="dark"
