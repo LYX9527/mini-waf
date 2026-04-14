@@ -70,8 +70,8 @@ pub async fn start_admin_server(state: Arc<AppState>) {
 
     let listener = TcpListener::bind(config::ADMIN_ADDR).await.unwrap();
     crate::log_daemon!("ADMIN_UI", "管理控制台启动成功，监听 http://{}", config::ADMIN_ADDR);
-    crate::log_daemon!("ADMIN_UI", "   API 端点: http://{}/api/v1/", config::ADMIN_ADDR);
-    crate::log_daemon!("ADMIN_UI", "   管理面板: http://{}/", config::ADMIN_ADDR);
+    crate::log_daemon!("ADMIN_UI", "API 端点: http://{}/api/v1/", config::ADMIN_ADDR);
+    crate::log_daemon!("ADMIN_UI", "管理面板: http://{}/", config::ADMIN_ADDR);
 
     if let Err(e) = axum::serve(listener, app).await {
         crate::log_error!("ADMIN_UI", "管理 API 运行异常: {}", e);

@@ -62,6 +62,8 @@ pub struct AccessLog {
     pub matched_rule: Option<String>,
     pub user_agent: String,
     pub referer: String,
+    pub country: Option<String>,
+    pub city: Option<String>,
 }
 
 /// 实时计数器（原子操作，无锁）

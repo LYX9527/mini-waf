@@ -1,4 +1,5 @@
-import { Table, Input, DatePicker, Tag, Space } from 'antd'
+import { Table, Input, DatePicker, Tag, Space, Tooltip } from 'antd'
+import { EnvironmentOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import api from '../api/client'
 
@@ -9,6 +10,8 @@ interface LogItem {
   status_code: number
   is_blocked: boolean
   matched_rule: string | null
+  country: string | null
+  city: string | null
   created_at: string
 }
 
@@ -60,7 +63,27 @@ export default function AccessLogs() {
       dataIndex: 'ip_address',
       key: 'ip_address',
       width: 140,
-      render: (ip: string) => <Tag color="blue">{ip}</Tag>,
+      render: (ip: string, record: LogItem) => (
+        <Tooltip title={[record.country, record.city].filter(Boolean).join(' · ') || '未知'}>
+          <Tag color="blue">{ip}</Tag>
+        </Tooltip>
+      ),
+    },
+    {
+      title: '来源',
+      key: 'geo',
+      width: 160,
+      render: (_: any, record: LogItem) => {
+        const parts = [record.country, record.city].filter(Boolean)
+        return parts.length ? (
+          <span style={{ color: '#8b949e' }}>
+            <EnvironmentOutlined style={{ marginRight: 4, color: '#1668dc' }} />
+            {parts.join(' · ')}
+          </span>
+        ) : (
+          <span style={{ color: '#484f58' }}>-</span>
+        )
+      }
     },
     {
       title: '方法',

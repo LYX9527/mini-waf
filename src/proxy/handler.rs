@@ -96,6 +96,23 @@ fn send_access_log(state: &AppState, ctx: &RequestContext, status_code: u16, is_
         .unwrap_or("")
         .to_string();
 
+    // 通过本地 MMDB 解析 IP 归属地
+    let (country, city) = if let Some(ref db) = state.geo_db {
+        if let Ok(city_data) = db.lookup::<maxminddb::geoip2::City>(ctx.ip_addr.ip()) {
+            let c = city_data.country.as_ref().and_then(|c| c.iso_code).map(|s| s.to_string());
+            let ci = city_data.city.as_ref().and_then(|c| {
+                c.names.as_ref().and_then(|names| {
+                    names.get("zh-CN").or_else(|| names.get("en")).map(|s| s.to_string())
+                })
+            });
+            (c, ci)
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     let log = AccessLog {
         ip: ctx.ip.clone(),
         path: ctx.path_query.clone(),
@@ -105,6 +122,8 @@ fn send_access_log(state: &AppState, ctx: &RequestContext, status_code: u16, is_
         matched_rule,
         user_agent: ctx.user_agent.clone(),
         referer,
+        country,
+        city,
     };
     let _ = state.access_log_tx.try_send(log);
 }

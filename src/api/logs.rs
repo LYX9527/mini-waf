@@ -120,7 +120,7 @@ pub async fn get_access_logs(
         .unwrap_or(0);
 
     let data_query = format!(
-        "SELECT ip_address, request_path, method, status_code, is_blocked, matched_rule, created_at \
+        "SELECT ip_address, request_path, method, status_code, is_blocked, matched_rule, created_at, country, city \
          FROM access_logs WHERE {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
         where_sql, page_size, offset
     );
@@ -140,6 +140,8 @@ pub async fn get_access_logs(
                 "is_blocked": row.get::<i8, _>("is_blocked") != 0,
                 "matched_rule": row.get::<Option<String>, _>("matched_rule"),
                 "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+                "country": row.get::<Option<String>, _>("country"),
+                "city": row.get::<Option<String>, _>("city"),
             })
         })
         .collect();

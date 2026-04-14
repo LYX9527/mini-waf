@@ -26,6 +26,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = sqlx::query("ALTER TABLE rules ADD COLUMN match_type VARCHAR(50) NOT NULL DEFAULT 'Contains';").execute(&pool).await;
     let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('custom_block_page', '', '自定义拦截页面 HTML（留空表示原生）');").execute(&pool).await;
     let _ = sqlx::query("INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VALUES ('geo_blocked_countries', '', '被封禁的国家 ISO 代码（逗号分隔，如 RU,IR）');").execute(&pool).await;
+    // 自动迁移：访问日志增加 IP 归属地字段
+    let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN country VARCHAR(10) DEFAULT NULL;").execute(&pool).await;
+    let _ = sqlx::query("ALTER TABLE access_logs ADD COLUMN city VARCHAR(100) DEFAULT NULL;").execute(&pool).await;
 
     // 2. 加载 WAF 防御规则
     let rule_records = sqlx::query!("SELECT keyword, target_field, match_type FROM rules WHERE status = 1")
@@ -219,13 +222,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // 批量 INSERT
             let mut query = String::from(
-                "INSERT INTO access_logs (ip_address, request_path, method, status_code, is_blocked, matched_rule, user_agent, referer) VALUES ",
+                "INSERT INTO access_logs (ip_address, request_path, method, status_code, is_blocked, matched_rule, user_agent, referer, country, city) VALUES ",
             );
             let values: Vec<String> = batch
                 .iter()
                 .map(|l| {
                     format!(
-                        "('{}', '{}', '{}', {}, {}, {}, '{}', '{}')",
+                        "('{}', '{}', '{}', {}, {}, {}, '{}', '{}', {}, {})",
                         l.ip.replace('\'', "''"),
                         l.path.replace('\'', "''").chars().take(2048).collect::<String>(),
                         l.method,
@@ -237,6 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .unwrap_or_else(|| "NULL".to_string()),
                         l.user_agent.replace('\'', "''").chars().take(1024).collect::<String>(),
                         l.referer.replace('\'', "''").chars().take(2048).collect::<String>(),
+                        l.country.as_ref().map(|c| format!("'{}'", c.replace('\'', "''"))).unwrap_or_else(|| "NULL".to_string()),
+                        l.city.as_ref().map(|c| format!("'{}'", c.replace('\'', "''"))).unwrap_or_else(|| "NULL".to_string()),
                     )
                 })
                 .collect();

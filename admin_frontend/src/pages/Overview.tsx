@@ -11,7 +11,12 @@ import {
   DashboardOutlined,
 } from '@ant-design/icons'
 import { Line, Column, Pie } from '@ant-design/charts'
-import { ComposableMap, Geographies, Geography, Marker, ZoomableGroup } from 'react-simple-maps'
+import * as echarts from 'echarts'
+import ReactECharts from 'echarts-for-react'
+import worldGeoJson from '../assets/world.json'
+
+// 注册世界地图
+echarts.registerMap('world', worldGeoJson as any)
 import { useEffect, useState, useCallback } from 'react'
 import api from '../api/client'
 
@@ -59,7 +64,7 @@ interface TopItem {
   count: number
 }
 
-const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json'
+
 
 const STATUS_LABELS: Record<number, string> = {
   200: '200 OK',
@@ -200,51 +205,127 @@ export default function Overview() {
       {/* 地图 + 状态分布 */}
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
         <Col xs={24} lg={14}>
-          <Card title="IP 来源世界地图" style={{ borderColor: '#21262d' }}>
-            <div style={{ height: 320, overflow: 'hidden', borderRadius: 4 }}>
-              <ComposableMap
-                projectionConfig={{ rotate: [-10, 0, 0] }}
-                style={{ width: '100%', height: '100%' }}
-              >
-                <ZoomableGroup center={[0, 20]} zoom={1}>
-                  <Geographies geography={GEO_URL}>
-                    {({ geographies }) =>
-                      geographies.map((geo) => (
-                        <Geography
-                          key={geo.rsmKey}
-                          geography={geo}
-                          fill="#161b22"
-                          stroke="#30363d"
-                          strokeWidth={0.5}
-                          style={{
-                            default: { outline: 'none' },
-                            hover: { fill: '#21262d', outline: 'none' },
-                          }}
-                        />
-                      ))
-                    }
-                  </Geographies>
-                  {geoMarkers.map((item) => (
-                    <Marker key={item.ip} coordinates={[item.lng!, item.lat!]}>
-                      <circle
-                        r={Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))}
-                        fill="#f5222d80"
-                        stroke="#f5222d"
-                        strokeWidth={1}
-                      >
-                        <animate
-                          attributeName="r"
-                          values={`${Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))};${Math.max(5, Math.min(14, Math.sqrt(item.count) * 2.5))};${Math.max(3, Math.min(10, Math.sqrt(item.count) * 2))}`}
-                          dur="2s"
-                          repeatCount="indefinite"
-                        />
-                      </circle>
-                      <title>{item.ip} ({item.city || item.country || '未知'}) - {item.count} 次请求</title>
-                    </Marker>
-                  ))}
-                </ZoomableGroup>
-              </ComposableMap>
+          <Card
+            title={
+              <span>
+                <GlobalOutlined style={{ marginRight: 8, color: '#1668dc' }} />
+                IP 来源威胁态势图
+              </span>
+            }
+            extra={<span style={{ color: '#484f58', fontSize: 12 }}>{geoMarkers.length} 个活跃来源</span>}
+            style={{ borderColor: '#21262d' }}
+          >
+            <div style={{
+              height: 420,
+              overflow: 'hidden',
+              borderRadius: 8,
+              background: 'radial-gradient(ellipse at center, #0d1b2a 0%, #0a0f1a 100%)',
+              position: 'relative',
+            }}>
+              {/* 网格背景线 */}
+              <div style={{
+                position: 'absolute', inset: 0, opacity: 0.06,
+                backgroundImage: 'linear-gradient(#1668dc 1px, transparent 1px), linear-gradient(90deg, #1668dc 1px, transparent 1px)',
+                backgroundSize: '40px 40px',
+                pointerEvents: 'none',
+              }} />
+              <ReactECharts
+                option={{
+                  backgroundColor: 'transparent',
+                  tooltip: {
+                    trigger: 'item',
+                    formatter: (params: any) => {
+                      if (params.seriesType === 'effectScatter') {
+                        return `${params.data.name}<br/>IP: ${params.data.ip}<br/>请求次数: ${params.data.value[2]}`
+                      }
+                      return params.name
+                    },
+                    backgroundColor: 'rgba(22,27,34,0.9)',
+                    borderColor: '#30363d',
+                    textStyle: { color: '#c9d1d9', fontSize: 12 },
+                  },
+                  geo: {
+                    map: 'world',
+                    roam: true,
+                    zoom: 1.2,
+                    itemStyle: {
+                      areaColor: '#0f2237',
+                      borderColor: '#1a3a5c',
+                      borderWidth: 0.5,
+                    },
+                    emphasis: {
+                      itemStyle: {
+                        areaColor: '#163050',
+                      },
+                      label: { show: false },
+                    },
+                  },
+                  series: [
+                    {
+                      name: 'IP 来源',
+                      type: 'effectScatter',
+                      coordinateSystem: 'geo',
+                      data: geoMarkers.map((item) => ({
+                        name: item.city || item.country || '未知',
+                        ip: item.ip,
+                        value: [item.lng, item.lat, item.count],
+                      })),
+                      symbolSize: (val: any) => {
+                        return Math.max(5, Math.min(20, Math.sqrt(val[2]) * 3))
+                      },
+                      showEffectOn: 'render',
+                      rippleEffect: {
+                        brushType: 'stroke',
+                        scale: 3,
+                      },
+                      itemStyle: {
+                        color: '#f5222d',
+                        shadowBlur: 10,
+                        shadowColor: '#f5222d',
+                      },
+                      zlevel: 1,
+                    },
+                  ],
+                }}
+                style={{ height: '100%', width: '100%' }}
+              />
             </div>
+
+            {/* IP 来源列表 */}
+            {geoMarkers.length > 0 && (
+              <div style={{
+                marginTop: 12,
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 6,
+                maxHeight: 64,
+                overflow: 'hidden',
+              }}>
+                {geoMarkers.slice(0, 10).map((item) => (
+                  <span key={item.ip} style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    background: '#161b22',
+                    border: '1px solid #21262d',
+                    fontSize: 11,
+                    color: '#8b949e',
+                  }}>
+                    <span style={{
+                      width: 6, height: 6, borderRadius: '50%',
+                      background: '#f5222d',
+                      display: 'inline-block',
+                      boxShadow: '0 0 4px #f5222d',
+                    }} />
+                    <span style={{ color: '#c9d1d9' }}>{item.ip}</span>
+                    <span>{item.city || item.country || '?'}</span>
+                    <span style={{ color: '#f5222d' }}>×{item.count}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </Card>
         </Col>
         <Col xs={24} lg={10}>
