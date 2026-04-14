@@ -71,6 +71,25 @@ impl RequestContext {
     }
 }
 
+/// 判断路径是否为常见的静态资源文件（前端碎片文件）
+fn is_static_asset_path(path: &str) -> bool {
+    // 取最后一个 '.' 之后的扩展名
+    let ext = match path.rfind('.') {
+        Some(pos) => &path[pos + 1..],
+        None => return false,
+    };
+    // 截取到 '?' 或 '#' 之前
+    let ext = ext.split(|c| c == '?' || c == '#').next().unwrap_or(ext);
+    matches!(
+        ext,
+        "js" | "mjs" | "css" | "map"
+            | "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" | "avif"
+            | "woff" | "woff2" | "ttf" | "otf" | "eot"
+            | "mp4" | "webm" | "mp3" | "ogg"
+            | "wasm" | "json" | "xml" | "txt"
+    )
+}
+
 /// 请求处理管线 —— 按安全关卡顺序依次检查
 pub async fn handle_request(
     req: Request<Incoming>,
@@ -99,19 +118,25 @@ pub async fn handle_request(
         return Ok(resp);
     }
 
-    // Stage 1: 惩罚盒子
-    if let Some(resp) = guard::check_penalty(&ctx, &state) {
-        return Ok(resp);
-    }
+    // 判断是否为静态资源请求（常见的前端碎片文件扩展名）
+    let is_static_asset = is_static_asset_path(&ctx.path);
 
-    // Stage 2: 限流
-    if let Some(resp) = guard::check_rate_limit(&ctx, is_verified, &state) {
-        return Ok(resp);
-    }
+    // 已验证用户请求静态资源时，跳过惩罚、限流、WAF 规则检查
+    if !is_verified || !is_static_asset {
+        // Stage 1: 惩罚盒子
+        if let Some(resp) = guard::check_penalty(&ctx, &state) {
+            return Ok(resp);
+        }
 
-    // Stage 3: WAF 规则匹配
-    if let Some(resp) = guard::check_waf_rules(&ctx, &state).await {
-        return Ok(resp);
+        // Stage 2: 限流
+        if let Some(resp) = guard::check_rate_limit(&ctx, is_verified, &state) {
+            return Ok(resp);
+        }
+
+        // Stage 3: WAF 规则匹配
+        if let Some(resp) = guard::check_waf_rules(&ctx, &state).await {
+            return Ok(resp);
+        }
     }
 
     // Stage 4+5: 路由匹配 + 反向代理

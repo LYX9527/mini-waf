@@ -32,13 +32,12 @@ pub fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
                 if original_fp.ip == ctx.ip && original_fp.user_agent == ctx.user_agent {
                     return true;
                 } else {
-                    // Cookie 盗用或环境突变
+                    // IP 或 UA 发生变化，失效旧令牌，强制重新质询
                     println!(
-                        "🚨 [高危告警] 拦截到 Cookie 盗用或环境突变！\n   Token: {}\n   期望环境 -> IP: {}, UA: {}\n   实际环境 -> IP: {}, UA: {}",
+                        "⚠️ 环境变化，令牌失效！\n   Token: {}\n   原始环境 -> IP: {}, UA: {}\n   当前环境 -> IP: {}, UA: {}",
                         token, original_fp.ip, original_fp.user_agent, ctx.ip, ctx.user_agent
                     );
                     state.verified_tokens.invalidate(token);
-                    state.penalty_box.insert(ctx.ip.clone(), 100);
                 }
             }
             break;
