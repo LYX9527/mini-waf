@@ -44,7 +44,7 @@ RUN mkdir -p /app/data && \
 # ==========================================
 # 3. 最终运行阶段 (极简运行环境)
 # ==========================================
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 WORKDIR /opt/mini_waf
 
 # 安装运行时的必要库

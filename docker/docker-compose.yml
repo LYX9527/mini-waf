@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   mini-waf:
-    image: ghcr.io/liyixing/mini_waf:latest
+    image: ghcr.io/lyx9527/mini-waf:master
     container_name: mini-waf
     ports:
       - "49888:48080" # WAF 服务端口
