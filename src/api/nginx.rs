@@ -39,6 +39,18 @@ pub struct MainConfRequest {
 
 // ─── 工具函数 ──────────────────────────────────────────
 
+/// 校验 server_name / root_path 不包含注入字符
+/// server_name 只允许字母、数字、点、连字符、下划线、通配符 *
+fn validate_server_name(s: &str) -> bool {
+    s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '*'))
+}
+
+/// 校验 root_path 只允许绝对路径中的合法字符（不能含分号、花括号等注入符）
+fn validate_path(s: &str) -> bool {
+    s.starts_with('/')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~'))
+}
+
 /// 生成 nginx server block 配置内容 (基础模式)
 fn generate_server_block(port: u16, server_name: Option<&str>, root: &str) -> String {
     let sn = server_name.unwrap_or("_");
@@ -70,7 +82,7 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<Vec<u8>, String> {
 
     let socket_path = "/var/run/docker.sock";
 
-    // Step 1: 创建 exec 实例
+    // Step 1: 创建 exec 实例（Connection: close 确保响应完成后 Docker 关闭连接）
     let create_body = serde_json::json!({
         "AttachStdout": true,
         "AttachStderr": true,
@@ -78,7 +90,7 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<Vec<u8>, String> {
     });
     let body_str = create_body.to_string();
     let create_request = format!(
-        "POST /containers/{}/exec HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /containers/{}/exec HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         NGINX_CONTAINER_NAME, body_str.len(), body_str
     );
 
@@ -86,6 +98,8 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<Vec<u8>, String> {
         format!("无法连接 Docker Socket: {}。请确保已挂载 /var/run/docker.sock", e)
     })?;
     stream.write_all(create_request.as_bytes()).await.map_err(|e| format!("写入 Docker Socket 失败: {}", e))?;
+    // 半关闭写端，通知 Docker 我们发完了（某些实现需要此步骤）
+    stream.shutdown().await.ok();
 
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf).await.map_err(|e| format!("读取 Docker 响应失败: {}", e))?;
@@ -102,27 +116,95 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<Vec<u8>, String> {
         return Err(format!("创建 exec 失败: {}", resp));
     };
 
-    // Step 2: 执行并读取输出（循环读直到 EOF）
+    // Step 2: 执行并读取输出
+    // Connection: close 强制 Docker 在命令完成后关闭 Socket，loop 才能收到 EOF
     let start_body = serde_json::json!({"Detach": false, "Tty": false});
     let start_str = start_body.to_string();
     let start_request = format!(
-        "POST /exec/{}/start HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /exec/{}/start HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         exec_id, start_str.len(), start_str
     );
 
     let mut stream2 = UnixStream::connect(socket_path).await.map_err(|e| format!("连接失败: {}", e))?;
     stream2.write_all(start_request.as_bytes()).await.map_err(|e| format!("执行失败: {}", e))?;
+    // 半关闭写端，让 Docker 知道请求已发送完毕
+    stream2.shutdown().await.ok();
 
     let mut result = Vec::new();
     let mut tmp = vec![0u8; 8192];
     loop {
         match stream2.read(&mut tmp).await {
-            Ok(0) => break, // EOF
+            Ok(0) => break, // Docker 关闭了连接 (Connection: close 保证)
             Ok(n) => result.extend_from_slice(&tmp[..n]),
             Err(e) => return Err(format!("读取结果失败: {}", e)),
         }
     }
 
+    Ok(result)
+}
+
+/// 与 docker_exec 相同，但可指定任意容器名（供其他模块复用）
+pub async fn docker_exec_in(container: &str, cmd: Vec<&str>) -> Result<Vec<u8>, String> {
+    use tokio::net::UnixStream;
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+
+    let socket_path = "/var/run/docker.sock";
+
+    let create_body = serde_json::json!({
+        "AttachStdout": true,
+        "AttachStderr": true,
+        "Cmd": cmd
+    });
+    let body_str = create_body.to_string();
+    let create_request = format!(
+        "POST /containers/{}/exec HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        container, body_str.len(), body_str
+    );
+
+    let mut stream = UnixStream::connect(socket_path).await
+        .map_err(|e| format!("无法连接 Docker Socket: {}", e))?;
+    stream.write_all(create_request.as_bytes()).await
+        .map_err(|e| format!("写入失败: {}", e))?;
+    stream.shutdown().await.ok();
+
+    let mut buf = vec![0u8; 8192];
+    let n = stream.read(&mut buf).await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
+    let resp = String::from_utf8_lossy(&buf[..n]);
+
+    let exec_id = if let Some(id_start) = resp.find("\"Id\":\"") {
+        let start = id_start + 6;
+        if let Some(id_end) = resp[start..].find('"') {
+            resp[start..start + id_end].to_string()
+        } else {
+            return Err("无法解析 exec ID".to_string());
+        }
+    } else {
+        return Err(format!("容器 {} exec 创建失败: {}", container, resp));
+    };
+
+    let start_body = serde_json::json!({"Detach": false, "Tty": false});
+    let start_str = start_body.to_string();
+    let start_request = format!(
+        "POST /exec/{}/start HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        exec_id, start_str.len(), start_str
+    );
+
+    let mut stream2 = UnixStream::connect(socket_path).await
+        .map_err(|e| format!("连接失败: {}", e))?;
+    stream2.write_all(start_request.as_bytes()).await
+        .map_err(|e| format!("执行失败: {}", e))?;
+    stream2.shutdown().await.ok();
+
+    let mut result = Vec::new();
+    let mut tmp = vec![0u8; 8192];
+    loop {
+        match stream2.read(&mut tmp).await {
+            Ok(0) => break,
+            Ok(n) => result.extend_from_slice(&tmp[..n]),
+            Err(e) => return Err(format!("读取结果失败: {}", e)),
+        }
+    }
     Ok(result)
 }
 
@@ -157,22 +239,27 @@ pub async fn list_nginx_configs() -> Json<serde_json::Value> {
             let filename = entry.file_name().to_string_lossy().to_string();
             if filename.starts_with("waf_site_") && filename.ends_with(".conf") {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    // 修复逻辑炸弹1: 以空格或分号分割，只取第一个词，兼容
+                    // "listen 80;", "listen 443 ssl;", "listen 80 default_server;"
                     let port = content.lines()
                         .find(|l| l.trim().starts_with("listen"))
                         .and_then(|l| l.trim().strip_prefix("listen "))
-                        .and_then(|l| l.trim_end_matches(';').trim().parse::<u16>().ok())
+                        .and_then(|rest| rest.split(|c| c == ' ' || c == ';').next())
+                        .and_then(|s| s.trim().parse::<u16>().ok())
                         .unwrap_or(0);
 
                     let server_name = content.lines()
                         .find(|l| l.trim().starts_with("server_name"))
                         .and_then(|l| l.trim().strip_prefix("server_name "))
-                        .map(|l| l.trim_end_matches(';').trim().to_string())
-                        .filter(|s| s != "_");
+                        .and_then(|rest| rest.split(|c| c == ' ' || c == ';').next())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| s != "_" && !s.is_empty());
 
                     let root = content.lines()
                         .find(|l| l.trim().starts_with("root"))
                         .and_then(|l| l.trim().strip_prefix("root "))
-                        .map(|l| l.trim_end_matches(';').trim().to_string())
+                        .and_then(|rest| rest.split(';').next())
+                        .map(|s| s.trim().to_string())
                         .unwrap_or_default();
 
                     configs.push(serde_json::json!({
@@ -195,6 +282,24 @@ pub async fn list_nginx_configs() -> Json<serde_json::Value> {
 pub async fn add_nginx_config(
     Json(payload): Json<NginxConfigRequest>,
 ) -> Json<serde_json::Value> {
+    // 注入防护: 校验 server_name 和 root_path
+    if let Some(sn) = &payload.server_name {
+        if !sn.is_empty() && !validate_server_name(sn) {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "server_name 包含非法字符，只允许字母、数字、点、连字符、下划线、通配符 *"
+            }));
+        }
+    }
+    if let Some(root) = &payload.root_path {
+        if !root.is_empty() && !validate_path(root) {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "root_path 必须是以 / 开头的合法路径"
+            }));
+        }
+    }
+
     let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(conf_filename(payload.listen_port));
 
     if conf_path.exists() {
@@ -281,62 +386,106 @@ pub async fn delete_nginx_config(
 
 // ─── API: 主配置文件 ──────────────────────────────────
 
-/// GET /api/v1/nginx/main-conf — 读取主配置文件
-/// 优先读取共享卷中的 staging 文件，不存在时才通过 docker exec 获取并缓存
-pub async fn get_main_conf() -> Json<serde_json::Value> {
-    // 优先: 从共享卷 staging 文件读取（最可靠）
-    let staging = std::path::Path::new(NGINX_MAIN_CONF_STAGING);
-    if staging.exists() {
-        if let Ok(content) = std::fs::read_to_string(staging) {
-            if !content.is_empty() {
-                return Json(serde_json::json!({ "content": content }));
-            }
-        }
-    }
+/// 默认 nginx.conf 模板（当 staging 文件不存在时使用）
+fn default_nginx_conf() -> &'static str {
+    r#"user  nginx;
+worker_processes  auto;
 
-    // 降级: 通过 docker exec 读取 nginx 容器内的原始配置，同时缓存到 staging
-    match docker_exec(vec!["cat", "/etc/nginx/nginx.conf"]).await {
-        Ok(raw_bytes) => {
-            let content = extract_exec_body(&raw_bytes);
-            if !content.is_empty() {
-                // 缓存到 staging 文件，下次直接读
-                let _ = std::fs::write(staging, &content);
-                return Json(serde_json::json!({ "content": content }));
-            }
-            Json(serde_json::json!({ "content": "", "error": "exec 返回空内容" }))
-        }
-        Err(e) => {
-            Json(serde_json::json!({ "content": "", "error": e }))
-        }
-    }
+error_log  /var/log/nginx/error.log notice;
+pid        /run/nginx.pid;
+
+events {
+    worker_connections  1024;
 }
 
-/// PUT /api/v1/nginx/main-conf — 保存主配置文件
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+"#
+}
+
+/// 判断 staging 文件内容是否有效（非 HTTP 响应头、非空、包含 nginx 关键字）
+fn is_valid_nginx_conf(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with("HTTP/")
+        && !trimmed.starts_with("Content-")
+        && (trimmed.contains("worker_processes")
+            || trimmed.contains("events")
+            || trimmed.contains("http")
+            || trimmed.contains("server"))
+}
+
+/// GET /api/v1/nginx/main-conf — 读取主配置文件
+/// 策略: staging 文件（有效时）> 默认模板
+/// 注: 不通过 docker exec 读取，避免 multiplexed stream 解析问题
+pub async fn get_main_conf() -> Json<serde_json::Value> {
+    let staging = std::path::Path::new(NGINX_MAIN_CONF_STAGING);
+
+    if staging.exists() {
+        if let Ok(content) = std::fs::read_to_string(staging) {
+            if is_valid_nginx_conf(&content) {
+                return Json(serde_json::json!({ "content": content }));
+            } else {
+                // staging 内容损坏（如存了 HTTP 响应头），删除并重建
+                eprintln!(
+                    "[WARN] staging 文件内容无效，已重置: {}",
+                    content.chars().take(80).collect::<String>()
+                );
+                let _ = std::fs::remove_file(staging);
+            }
+        }
+    }
+
+    // staging 不存在或已损坏：返回内置默认模板，并写入 staging 供后续使用
+    let default_conf = default_nginx_conf().to_string();
+    let _ = std::fs::write(staging, &default_conf);
+    Json(serde_json::json!({ "content": default_conf }))
+}
+
+/// PUT /api/v1/nginx/main-conf — 保存主配置文件（原子化更新）
+/// 顺序: 写 staging → 用 staging 测试 → 测试通过后才覆盖 nginx.conf → reload
 pub async fn save_main_conf(
     Json(payload): Json<MainConfRequest>,
 ) -> Json<serde_json::Value> {
-    // 1. 写入 staging 文件（共享卷中）
+    // 1. 写入 staging 文件（共享卷中，nginx 容器可直接访问）
     if let Err(e) = std::fs::write(NGINX_MAIN_CONF_STAGING, &payload.content) {
         return Json(serde_json::json!({ "status": "error", "message": format!("写入 staging 失败: {}", e) }));
     }
 
-    // 2. 通过 docker exec 复制到 nginx 的真正位置
-    match docker_exec(vec!["cp", "/etc/nginx/conf.d/.nginx_main.conf", "/etc/nginx/nginx.conf"]).await {
-        Ok(_) => {}
-        Err(e) => {
-            return Json(serde_json::json!({ "status": "error", "message": format!("复制配置失败: {}", e) }));
-        }
+    // 2. 先测试 staging 文件的配置（关键：此时 nginx.conf 仍是旧的安全版本）
+    let test_raw = match docker_exec(vec!["nginx", "-t", "-c", "/etc/nginx/conf.d/.nginx_main.conf"]).await {
+        Ok(b) => b,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "message": format!("测试配置失败: {}", e) })),
+    };
+    let test_output = extract_exec_body(&test_raw);
+    // nginx -t 成功时输出包含 "successful"，失败时包含错误信息（到 stderr）
+    if !test_output.contains("successful") && !test_output.is_empty() {
+        // 测试失败：nginx.conf 未被修改，依然安全
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("配置语法错误，已拦截，nginx.conf 未被修改:\n{}", test_output)
+        }));
     }
 
-    // 3. 测试配置
-    match test_nginx_config().await {
-        Ok(_) => {},
-        Err(e) => {
-            return Json(serde_json::json!({ "status": "error", "message": format!("配置测试失败: {}", e) }));
-        }
+    // 3. 测试通过：正式覆盖 nginx.conf（原子化关键步骤）
+    if let Err(e) = docker_exec(vec!["cp", "/etc/nginx/conf.d/.nginx_main.conf", "/etc/nginx/nginx.conf"]).await {
+        return Json(serde_json::json!({ "status": "error", "message": format!("覆写 nginx.conf 失败: {}", e) }));
     }
 
-    // 4. Reload
+    // 4. Reload（配置已经测试通过，reload 不会失败）
     let reload_msg = match reload_nginx().await {
         Ok(msg) => msg,
         Err(e) => return Json(serde_json::json!({ "status": "warning", "message": format!("已保存，reload 失败: {}", e) })),
@@ -356,42 +505,62 @@ pub async fn test_config() -> Json<serde_json::Value> {
 /// 按 Docker Multiplexed Stream 协议解析 exec 输出
 /// 协议格式: [stream_type(1B)] [padding(3B)] [size(4B big-endian)] [payload(size B)] ...
 fn extract_exec_body(raw: &[u8]) -> String {
-    // 先跳过 HTTP 响应头（找到 \r\n\r\n）
+    // Step1: 跳过 HTTP 响应头（找到 \r\n\r\n）
     let body_start = raw.windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|p| p + 4)
         .unwrap_or(0);
-
     let mut body = &raw[body_start..];
 
-    // 如果服务器用 chunked transfer encoding，跳过 chunk size 行
-    // chunked 格式: <hex_size>\r\n<data>\r\n
-    // 简单检测：第一个字节是否是 hex 字符
-    if body.first().map(|b| b.is_ascii_hexdigit()).unwrap_or(false) {
-        // 跳过 chunk size 行
-        if let Some(end) = body.windows(2).position(|w| w == b"\r\n") {
-            body = &body[end + 2..];
+    // Step2: 检测是否是 chunked transfer encoding
+    // 判断: 响应头中是否含 "Transfer-Encoding: chunked"
+    let header_section = &raw[..body_start.saturating_sub(4)];
+    let is_chunked = header_section
+        .windows(b"Transfer-Encoding: chunked".len())
+        .any(|w| w.eq_ignore_ascii_case(b"Transfer-Encoding: chunked"));
+
+    // Step3: 如果 chunked，解码所有 chunk（可能有多个）
+    let decoded: Vec<u8>;
+    if is_chunked {
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos < body.len() {
+            // 读取 chunk size 行（hex 数字后跟 \r\n）
+            if let Some(crlf) = body[pos..].windows(2).position(|w| w == b"\r\n") {
+                let size_str = std::str::from_utf8(&body[pos..pos + crlf]).unwrap_or("");
+                let chunk_size = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
+                pos += crlf + 2; // 跳过 size 行和 \r\n
+                if chunk_size == 0 {
+                    break; // 末尾 chunk
+                }
+                if pos + chunk_size <= body.len() {
+                    out.extend_from_slice(&body[pos..pos + chunk_size]);
+                    pos += chunk_size + 2; // 跳过 chunk data 和尾随 \r\n
+                } else {
+                    out.extend_from_slice(&body[pos..]);
+                    break;
+                }
+            } else {
+                break;
+            }
         }
+        decoded = out;
+        body = &decoded;
     }
 
-    // 解析 Docker multiplexed stream frames
+    // Step4: 解析 Docker multiplexed stream frames
     let mut result = Vec::new();
     let mut i = 0;
     while i + 8 <= body.len() {
         let stream_type = body[i];
-        // stream_type: 0=stdin, 1=stdout, 2=stderr
         let size = u32::from_be_bytes([body[i+4], body[i+5], body[i+6], body[i+7]]) as usize;
         i += 8;
-        if i + size > body.len() {
-            // 数据不完整，取剩余全部
-            result.extend_from_slice(&body[i..]);
-            break;
-        }
+        let end = (i + size).min(body.len());
         if stream_type == 1 || stream_type == 2 {
-            // stdout 或 stderr 都收集
-            result.extend_from_slice(&body[i..i+size]);
+            // stdout(1) 或 stderr(2) 都收集
+            result.extend_from_slice(&body[i..end]);
         }
-        i += size;
+        i = end;
     }
 
     String::from_utf8_lossy(&result).trim().to_string()

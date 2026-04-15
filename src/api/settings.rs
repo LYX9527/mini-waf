@@ -51,9 +51,23 @@ pub async fn update_settings(
             Ok(r) => {
                 if r.rows_affected() > 0 {
                     updated += 1;
-                    if key == "custom_block_page" {
-                        let mut cache = state.custom_block_page.write().await;
-                        *cache = value.clone();
+                    // 同步更新内存缓存（保存到 DB 后立刻生效，无需重启）
+                    match key.as_str() {
+                        "custom_block_page" => {
+                            let mut cache = state.custom_block_page.write().await;
+                            *cache = value.clone();
+                        }
+                        "geo_blocked_countries" => {
+                            // 解析逗号分隔的 ISO 国家代码，写入内存
+                            let new_set: std::collections::HashSet<String> = value
+                                .split(',')
+                                .filter(|s| !s.trim().is_empty())
+                                .map(|s| s.trim().to_uppercase())
+                                .collect();
+                            let mut blocked = state.geo_blocked_countries.write().await;
+                            *blocked = new_set;
+                        }
+                        _ => {}
                     }
                 } else {
                     errors.push(format!("未知设置项: {}", key));

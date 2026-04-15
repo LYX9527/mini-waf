@@ -15,14 +15,15 @@ services:
       - "49888:48080" # WAF 服务端口
       - "49777:8081"  # 管理控制台端口
     environment:
-      - DATABASE_URL=mysql://mini_waf_user:password@mysql:3306/mini_waf?timezone=Asia%2FShanghai
+      - DATABASE_URL=mysql://mini_waf_user:__DB_PASSWORD__@mysql:3306/mini_waf?timezone=Asia%2FShanghai
       - JWT_SECRET=super_secret_waf_key_please_change
       - RUST_LOG=info
       - TZ=Asia/Shanghai
       - MMDB_PATH=./data/GeoLite2-City.mmdb
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # 控制 nginx reload
-      - nginx_conf:/etc/nginx/conf.d               # 共享 nginx 配置卷
+      - /var/run/docker.sock:/var/run/docker.sock  # 控制 nginx reload / certbot exec
+      - nginx_conf:/etc/nginx/conf.d               # 共享 nginx 站点配置卷
+      - nginx_certs:/certs                         # 证书读写卷（WAF 写，nginx 读）
     restart: unless-stopped
     depends_on:
       mysql:
@@ -33,11 +34,26 @@ services:
   nginx:
     image: nginx:alpine
     container_name: mini-waf-nginx
-    expose:
-      - "80"
+    ports:
+      - "80:80"    # HTTP（ACME HTTP-01 挑战 + HTTP→HTTPS 跳转）
+      - "443:443"  # HTTPS
     volumes:
       - nginx_conf:/etc/nginx/conf.d               # WAF 管理的站点配置
-      - ./data:/usr/share/nginx/html:ro             # 默认静态文件目录
+      - nginx_certs:/etc/nginx/certs:ro            # 证书只读挂载
+      - ./data:/usr/share/nginx/html:ro            # 默认静态文件目录
+      - certbot_webroot:/var/www/certbot:ro        # ACME HTTP-01 验证目录
+    restart: unless-stopped
+    networks:
+      - waf-network
+
+  # ACME / Certbot 服务（用于自动申请和续签 Let's Encrypt 证书）
+  certbot:
+    image: certbot/certbot:latest
+    container_name: mini-waf-certbot
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew --webroot --webroot-path=/var/www/certbot --quiet; done"
+    volumes:
+      - nginx_certs:/etc/letsencrypt                # certbot 默认证书输出目录（统一挂载）
+      - certbot_webroot:/var/www/certbot            # HTTP-01 challenge 文件目录
     restart: unless-stopped
     networks:
       - waf-network
@@ -49,13 +65,13 @@ services:
       - MYSQL_ROOT_PASSWORD=rootpassword
       - MYSQL_DATABASE=mini_waf
       - MYSQL_USER=mini_waf_user
-      - MYSQL_PASSWORD=password
+      - MYSQL_PASSWORD=__DB_PASSWORD__
       - TZ=Asia/Shanghai
     volumes:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "mini_waf_user", "-ppassword" ]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "--silent" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -65,3 +81,5 @@ services:
 volumes:
   mysql_data:
   nginx_conf:
+  nginx_certs:       # 证书共享卷：WAF 写入，nginx 只读挂载
+  certbot_webroot:   # ACME HTTP-01 challenge 文件临时目录

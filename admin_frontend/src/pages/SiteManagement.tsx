@@ -1,5 +1,5 @@
-import { Table, Button, Modal, Form, Input, Select, Switch, Tag, Popconfirm, Badge } from 'antd'
-import { PlusOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, Select, Switch, Tag, Popconfirm, Badge, AutoComplete, Tooltip } from 'antd'
+import { PlusOutlined, DeleteOutlined, CheckCircleOutlined, LockOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import api from '../api/client'
 import message from '../utils/messageApi'
@@ -29,6 +29,7 @@ export default function SiteManagement() {
   const [form] = Form.useForm()
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthInfo>>({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
+  const [certDomains, setCertDomains] = useState<string[]>([])
 
   const fetchRoutes = async () => {
     try {
@@ -42,6 +43,29 @@ export default function SiteManagement() {
   }
 
   useEffect(() => { fetchRoutes() }, [])
+
+  // 统一开启弹窗入口（新增 / 编辑）
+  const openModal = async (route?: RouteItem) => {
+    try {
+      const res = await api.get('/ssl/domains')
+      setCertDomains(res.data.domains || [])
+    } catch { setCertDomains([]) }
+
+    if (route) {
+      form.setFieldsValue({
+        path_prefix: route.path_prefix,
+        host_pattern: route.host_pattern || '',
+        route_type: route.route_type,
+        upstream: route.upstream,
+        is_spa: route.is_spa,
+      })
+      setEditingRoute({ id: route.id, path_prefix: route.path_prefix })
+    } else {
+      form.resetFields()
+      setEditingRoute(null)
+    }
+    setModalOpen(true)
+  }
 
   const handleSubmit = async () => {
     try {
@@ -64,17 +88,7 @@ export default function SiteManagement() {
     }
   }
 
-  const handleEditClick = (record: RouteItem) => {
-    form.setFieldsValue({
-      path_prefix: record.path_prefix,
-      host_pattern: record.host_pattern || '',
-      route_type: record.route_type,
-      upstream: record.upstream,
-      is_spa: record.is_spa,
-    })
-    setEditingRoute({ id: record.id, path_prefix: record.path_prefix })
-    setModalOpen(true)
-  }
+  const handleEditClick = (record: RouteItem) => openModal(record)
 
   const handleDisable = async (id: number) => {
     try {
@@ -220,7 +234,7 @@ export default function SiteManagement() {
           <Button icon={<CheckCircleOutlined />} onClick={checkAllProxy}>
             全部测试
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openModal()}>
             添加路由
           </Button>
         </div>
@@ -252,10 +266,35 @@ export default function SiteManagement() {
               <span>
                 域名限制&nbsp;
                 <span style={{ color: '#8b949e', fontSize: 12, fontWeight: 400 }}>（可选，不填则匹配所有域名）</span>
+                {certDomains.length > 0 && (
+                  <span style={{ color: '#3fb950', fontSize: 12, marginLeft: 8 }}>
+                    <LockOutlined style={{ marginRight: 3 }} />{certDomains.length} 个域名已安装 SSL
+                  </span>
+                )}
               </span>
             }
           >
-            <Input placeholder="api.example.com 或 *.example.com" />
+            <AutoComplete
+              options={certDomains.map(d => ({
+                value: d,
+                label: (
+                  <span>
+                    <LockOutlined style={{ color: '#3fb950', marginRight: 6 }} />
+                    {d}
+                    <Tag color="green" style={{ marginLeft: 8, fontSize: 10 }}>SSL 已安装</Tag>
+                  </span>
+                ),
+              }))}
+              placeholder="api.example.com 或 *.example.com"
+              filterOption={(input, option) =>
+                (option?.value as string || '').toLowerCase().includes(input.toLowerCase())
+              }
+              onChange={(val) => {
+                if (certDomains.includes(val)) {
+                  message.info(`域名 ${val} 已安装 SSL 证书，保存后 HTTPS 即生效`)
+                }
+              }}
+            />
           </Form.Item>
           <Form.Item name="route_type" hidden initialValue="proxy">
             <Input />

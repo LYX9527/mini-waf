@@ -12,6 +12,7 @@ const AttackLogs = lazy(() => import('./pages/AttackLogs'))
 const AccessLogs = lazy(() => import('./pages/AccessLogs'))
 const IPLists = lazy(() => import('./pages/IPLists'))
 const SecurityRules = lazy(() => import('./pages/SecurityRules'))
+const SSLManagement = lazy(() => import('./pages/SSLManagement'))
 const SystemSettings = lazy(() => import('./pages/SystemSettings'))
 const Login = lazy(() => import('./pages/Login'))
 const SystemInit = lazy(() => import('./pages/SystemInit'))
@@ -70,6 +71,7 @@ function AppContent() {
             <Route path="logs/access" element={<Suspense fallback={<Loading />}><AccessLogs /></Suspense>} />
             <Route path="ip-lists" element={<Suspense fallback={<Loading />}><IPLists /></Suspense>} />
             <Route path="rules" element={<Suspense fallback={<Loading />}><SecurityRules /></Suspense>} />
+            <Route path="ssl" element={<Suspense fallback={<Loading />}><SSLManagement /></Suspense>} />
             <Route path="settings" element={<Suspense fallback={<Loading />}><SystemSettings /></Suspense>} />
           </Route>
         </Routes>

@@ -4,6 +4,7 @@ pub mod logs;
 pub mod nginx;
 pub mod routes;
 pub mod settings;
+pub mod ssl;
 pub mod stats;
 
 use crate::config;
@@ -23,6 +24,10 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         .route("/rules", get(routes::get_rules))
         .route("/rules", post(routes::add_rule))
         .route("/rules", delete(routes::delete_rule))
+        .route("/rules/export", get(routes::export_rules))
+        .route("/rules/import", post(routes::import_rules))
+        .route("/rules/defaults", get(routes::get_default_rules))
+        .route("/rules/load-defaults", post(routes::load_default_rules))
         // 路由管理
         .route("/routes", get(routes::get_routes))
         .route("/routes", post(routes::add_route))
@@ -70,7 +75,30 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         // 认证鉴权
         .route("/auth/check-init", get(auth::check_init))
         .route("/auth/init", post(auth::init_admin))
-        .route("/auth/login", post(auth::login));
+        .route("/auth/login", post(auth::login))
+        // SSL 证书管理
+        .route("/ssl/certs", get(ssl::list_certs))
+        .route("/ssl/certs/upload", post(ssl::upload_cert))
+        .route("/ssl/certs/request", post(ssl::request_cert))
+        .route("/ssl/certs/renew/{domain}", post(ssl::renew_cert))
+        .route("/ssl/certs/{domain}", delete(ssl::delete_cert))
+        .route("/ssl/certs/{domain}/toggle-renew", post(ssl::toggle_auto_renew))
+        .route("/ssl/domains", get(ssl::list_cert_domains))
+        .route("/ssl/nginx-template/{domain}", get(ssl::nginx_ssl_template))
+        .route("/ssl/acme/config", get(ssl::get_acme_config))
+        .route("/ssl/acme/config", put(ssl::save_acme_config))
+        // ACME 账号管理
+        .route("/ssl/acme/accounts", get(ssl::list_acme_accounts))
+        .route("/ssl/acme/accounts", post(ssl::add_acme_account))
+        .route("/ssl/acme/accounts/{id}", put(ssl::update_acme_account))
+        .route("/ssl/acme/accounts/{id}", delete(ssl::delete_acme_account))
+        .route("/ssl/acme/accounts/{id}/set-default", post(ssl::set_default_acme_account))
+        // DNS 凭证管理
+        .route("/ssl/dns-credentials", get(ssl::list_dns_credentials))
+        .route("/ssl/dns-credentials", post(ssl::add_dns_credential))
+        .route("/ssl/dns-credentials/{id}", put(ssl::update_dns_credential))
+        .route("/ssl/dns-credentials/{id}", delete(ssl::delete_dns_credential))
+        .route("/ssl/dns-credentials/{id}/fields", get(ssl::get_dns_credential_json));
 
     // 前端静态文件目录
     let frontend_dir = "admin_frontend/dist";

@@ -126,6 +126,228 @@ pub async fn delete_rule(
         })),
     }
 }
+
+// ─── 内置默认规则集 ────────────────────────────────────────────────────────────
+/// 返回 OWASP Top10 核心规则集（关键词、目标区域、匹配模式、描述）
+fn builtin_default_rules() -> Vec<serde_json::Value> {
+    vec![
+        // SQL 注入
+        serde_json::json!({"keyword":"' or '1'='1","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 万能密码"}),
+        serde_json::json!({"keyword":"union select","target_field":"URL","match_type":"Contains","description":"SQL 注入 - UNION 查询"}),
+        serde_json::json!({"keyword":"drop table","target_field":"URL","match_type":"Contains","description":"SQL 注入 - DROP TABLE"}),
+        serde_json::json!({"keyword":"insert into","target_field":"URL","match_type":"Contains","description":"SQL 注入 - INSERT"}),
+        serde_json::json!({"keyword":"exec(","target_field":"URL","match_type":"Contains","description":"SQL 注入 - exec 函数"}),
+        serde_json::json!({"keyword":"or 1=1","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 永真条件"}),
+        serde_json::json!({"keyword":"-- ","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 注释符"}),
+        serde_json::json!({"keyword":";select ","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 堆叠查询"}),
+        // XSS 跨站脚本
+        serde_json::json!({"keyword":"<script","target_field":"URL","match_type":"Contains","description":"XSS - script 标签"}),
+        serde_json::json!({"keyword":"javascript:","target_field":"URL","match_type":"Contains","description":"XSS - javascript: 伪协议"}),
+        serde_json::json!({"keyword":"onerror=","target_field":"URL","match_type":"Contains","description":"XSS - onerror 事件"}),
+        serde_json::json!({"keyword":"onload=","target_field":"URL","match_type":"Contains","description":"XSS - onload 事件"}),
+        serde_json::json!({"keyword":"<img src=x","target_field":"URL","match_type":"Contains","description":"XSS - img src 注入"}),
+        serde_json::json!({"keyword":"alert(","target_field":"URL","match_type":"Contains","description":"XSS - alert 弹窗"}),
+        serde_json::json!({"keyword":"document.cookie","target_field":"URL","match_type":"Contains","description":"XSS - cookie 窃取"}),
+        serde_json::json!({"keyword":"eval(","target_field":"URL","match_type":"Contains","description":"XSS/RCE - eval 执行"}),
+        // 路径穿越
+        serde_json::json!({"keyword":"../","target_field":"URL","match_type":"Contains","description":"路径穿越攻击"}),
+        serde_json::json!({"keyword":"..\\","target_field":"URL","match_type":"Contains","description":"路径穿越攻击 (Windows)"}),
+        serde_json::json!({"keyword":"%2e%2e%2f","target_field":"URL","match_type":"Contains","description":"路径穿越 - URL编码形式"}),
+        serde_json::json!({"keyword":"/etc/passwd","target_field":"URL","match_type":"Contains","description":"路径穿越 - 读取 passwd"}),
+        serde_json::json!({"keyword":"/etc/shadow","target_field":"URL","match_type":"Contains","description":"路径穿越 - 读取 shadow"}),
+        serde_json::json!({"keyword":"c:\\windows","target_field":"URL","match_type":"Contains","description":"路径穿越 - Windows 系统路径"}),
+        // RCE / 命令注入
+        serde_json::json!({"keyword":"cmd.exe","target_field":"URL","match_type":"Contains","description":"RCE - Windows cmd"}),
+        serde_json::json!({"keyword":"/bin/sh","target_field":"URL","match_type":"Contains","description":"RCE - Unix shell"}),
+        serde_json::json!({"keyword":"/bin/bash","target_field":"URL","match_type":"Contains","description":"RCE - bash"}),
+        serde_json::json!({"keyword":"wget http","target_field":"URL","match_type":"Contains","description":"RCE - wget 下载"}),
+        serde_json::json!({"keyword":"curl http","target_field":"URL","match_type":"Contains","description":"RCE - curl 下载"}),
+        serde_json::json!({"keyword":"phpinfo()","target_field":"URL","match_type":"Contains","description":"PHP 信息泄露"}),
+        serde_json::json!({"keyword":"passthru(","target_field":"URL","match_type":"Contains","description":"PHP RCE - passthru"}),
+        serde_json::json!({"keyword":"system(","target_field":"URL","match_type":"Contains","description":"PHP RCE - system"}),
+        // SSRF 服务端请求伪造
+        serde_json::json!({"keyword":"169.254.169.254","target_field":"URL","match_type":"Contains","description":"SSRF - AWS 元数据"}),
+        serde_json::json!({"keyword":"metadata.google.internal","target_field":"URL","match_type":"Contains","description":"SSRF - GCP 元数据"}),
+        serde_json::json!({"keyword":"file:///","target_field":"URL","match_type":"Contains","description":"SSRF - 本地文件读取"}),
+        serde_json::json!({"keyword":"gopher://","target_field":"URL","match_type":"Contains","description":"SSRF - Gopher 协议"}),
+        serde_json::json!({"keyword":"dict://","target_field":"URL","match_type":"Contains","description":"SSRF - Dict 协议"}),
+        // Log4Shell / Log4j
+        serde_json::json!({"keyword":"${jndi:","target_field":"URL","match_type":"Contains","description":"Log4Shell (CVE-2021-44228)"}),
+        serde_json::json!({"keyword":"${jndi:","target_field":"Header","match_type":"Contains","description":"Log4Shell (Header 注入)"}),
+        // 扫描器 / 恶意 UA
+        serde_json::json!({"keyword":"sqlmap","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - sqlmap"}),
+        serde_json::json!({"keyword":"nikto","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nikto"}),
+        serde_json::json!({"keyword":"masscan","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Masscan"}),
+        serde_json::json!({"keyword":"nessus","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nessus"}),
+        serde_json::json!({"keyword":"nmap","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nmap"}),
+        serde_json::json!({"keyword":"acunetix","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Acunetix"}),
+        serde_json::json!({"keyword":"zgrab","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - zgrab"}),
+        serde_json::json!({"keyword":"dirsearch","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - dirsearch"}),
+        serde_json::json!({"keyword":"gobuster","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - gobuster"}),
+        // 敏感文件探测
+        serde_json::json!({"keyword":"wp-admin","target_field":"URL","match_type":"Contains","description":"WordPress 后台探测"}),
+        serde_json::json!({"keyword":".env","target_field":"URL","match_type":"Contains","description":"环境变量文件探测"}),
+        serde_json::json!({"keyword":".git/","target_field":"URL","match_type":"Contains","description":"Git 仓库泄露探测"}),
+        serde_json::json!({"keyword":"/.svn/","target_field":"URL","match_type":"Contains","description":"SVN 仓库泄露探测"}),
+        serde_json::json!({"keyword":"phpmyadmin","target_field":"URL","match_type":"Contains","description":"phpMyAdmin 探测"}),
+    ]
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportRulesRequest {
+    pub rules: Vec<ImportRuleItem>,
+    /// 是否先清空所有现有规则（默认 false = 合并）
+    #[serde(default)]
+    pub replace_all: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportRuleItem {
+    pub keyword: String,
+    #[serde(default = "default_url")]
+    pub target_field: String,
+    #[serde(default = "default_contains")]
+    pub match_type: String,
+}
+fn default_url() -> String { "URL".to_string() }
+fn default_contains() -> String { "Contains".to_string() }
+
+/// POST /rules/import — 批量导入规则（JSON 数组，可选 replace_all）
+pub async fn import_rules(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ImportRulesRequest>,
+) -> Json<serde_json::Value> {
+    if payload.replace_all {
+        // 先清空数据库和内存
+        let _ = sqlx::query("DELETE FROM rules WHERE rule_type = 'CUSTOM'")
+            .execute(&state.db_pool)
+            .await;
+        let mut rules = state.rules.write().await;
+        rules.clear();
+        drop(rules);
+    }
+
+    let mut inserted = 0usize;
+    let mut skipped = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for item in &payload.rules {
+        if item.keyword.trim().is_empty() { skipped += 1; continue; }
+
+        let compiled_regex = if item.match_type == "Regex" {
+            match regex::Regex::new(&item.keyword) {
+                Ok(r) => Some(r),
+                Err(e) => { errors.push(format!("'{}' 正则错误: {}", item.keyword, e)); continue; }
+            }
+        } else { None };
+
+        let res = sqlx::query(
+            "INSERT IGNORE INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'CUSTOM', 1, ?, ?)"
+        )
+        .bind(&item.keyword)
+        .bind(&item.target_field)
+        .bind(&item.match_type)
+        .execute(&state.db_pool)
+        .await;
+
+        match res {
+            Ok(r) if r.rows_affected() > 0 => {
+                let mut rules = state.rules.write().await;
+                if !rules.iter().any(|r| r.keyword == item.keyword && r.target_field == item.target_field && r.match_type == item.match_type) {
+                    rules.push(crate::state::WafRule {
+                        keyword: item.keyword.clone(),
+                        target_field: item.target_field.clone(),
+                        match_type: item.match_type.clone(),
+                        compiled_regex,
+                    });
+                }
+                inserted += 1;
+            }
+            Ok(_) => { skipped += 1; } // 重复
+            Err(e) => { errors.push(format!("'{}': {}", item.keyword, e)); }
+        }
+    }
+
+    Json(serde_json::json!({
+        "status": if errors.is_empty() { "success" } else { "partial" },
+        "message": format!("导入完成: 新增 {} 条，跳过 {} 条，失败 {} 条", inserted, skipped, errors.len()),
+        "inserted": inserted,
+        "skipped": skipped,
+        "errors": errors
+    }))
+}
+
+/// GET /rules/export — 导出所有规则为 JSON
+pub async fn export_rules(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let rules = state.rules.read().await;
+    let export: Vec<serde_json::Value> = rules.iter().map(|r| serde_json::json!({
+        "keyword": r.keyword,
+        "target_field": r.target_field,
+        "match_type": r.match_type,
+    })).collect();
+    Json(serde_json::json!({ "rules": export, "count": export.len() }))
+}
+
+/// POST /rules/load-defaults — 加载内置默认规则集（跳过已存在的）
+pub async fn load_default_rules(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let defaults = builtin_default_rules();
+    let mut inserted = 0usize;
+    let mut skipped = 0usize;
+
+    for item in &defaults {
+        let keyword = item["keyword"].as_str().unwrap_or("");
+        let target = item["target_field"].as_str().unwrap_or("URL");
+        let mtype = item["match_type"].as_str().unwrap_or("Contains");
+
+        if keyword.is_empty() { continue; }
+
+        let compiled_regex = if mtype == "Regex" {
+            regex::Regex::new(keyword).ok()
+        } else { None };
+
+        let res = sqlx::query(
+            "INSERT IGNORE INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'DEFAULT', 1, ?, ?)"
+        )
+        .bind(keyword)
+        .bind(target)
+        .bind(mtype)
+        .execute(&state.db_pool)
+        .await;
+
+        match res {
+            Ok(r) if r.rows_affected() > 0 => {
+                let mut rules = state.rules.write().await;
+                if !rules.iter().any(|r| r.keyword == keyword) {
+                    rules.push(crate::state::WafRule {
+                        keyword: keyword.to_string(),
+                        target_field: target.to_string(),
+                        match_type: mtype.to_string(),
+                        compiled_regex,
+                    });
+                }
+                inserted += 1;
+            }
+            _ => { skipped += 1; }
+        }
+    }
+
+    Json(serde_json::json!({
+        "status": "success",
+        "message": format!("默认规则集加载完成: 新增 {} 条，已存在跳过 {} 条", inserted, skipped),
+        "inserted": inserted,
+        "skipped": skipped,
+        "total_defaults": defaults.len()
+    }))
+}
+
+/// GET /rules/defaults — 预览内置默认规则列表（不写入）
+pub async fn get_default_rules() -> Json<serde_json::Value> {
+    let defaults = builtin_default_rules();
+    Json(serde_json::json!({ "rules": defaults, "count": defaults.len() }))
+}
+
 /// GET /routes: 列出所有路由
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let records = sqlx::query!("SELECT id, path_prefix, host_pattern, upstream, route_type, status FROM routes ORDER BY host_pattern IS NULL ASC, LENGTH(path_prefix) DESC")

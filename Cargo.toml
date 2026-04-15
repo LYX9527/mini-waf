@@ -17,7 +17,7 @@ http-body-util = "0.1"
 # 新增时间库，用于记录攻击发生的时间
 chrono = "0.4"
 # 新增：管理 API 框架与 JSON 处理
-axum = "0.8.8"
+axum = { version = "0.8.8", features = ["multipart"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # 新增：强大的异步数据库驱动 sqlx
@@ -36,3 +36,4 @@ maxminddb = "=0.23.0"
 tokio-rustls = "0.26.4"
 rustls = "0.23.38"
 rustls-pemfile = "2.2.0"
+x509-parser = "0.18.1"

@@ -9,6 +9,7 @@ import {
   UnorderedListOutlined,
   PoweroffOutlined,
   CloudServerOutlined,
+  LockOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
@@ -31,6 +32,7 @@ const menuItems = [
   },
   { key: '/ip-lists', icon: <SecurityScanOutlined />, label: '黑白名单' },
   { key: '/rules', icon: <SafetyCertificateOutlined />, label: '安全规则' },
+  { key: '/ssl', icon: <LockOutlined />, label: 'SSL 证书' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ]
 
