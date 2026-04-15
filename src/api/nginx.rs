@@ -64,7 +64,7 @@ fn conf_filename(port: u16) -> String {
 }
 
 /// 通过 Docker Socket 在 nginx 容器内执行命令
-async fn docker_exec(cmd: Vec<&str>) -> Result<String, String> {
+async fn docker_exec(cmd: Vec<&str>) -> Result<Vec<u8>, String> {
     use tokio::net::UnixStream;
     use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
@@ -102,7 +102,7 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<String, String> {
         return Err(format!("创建 exec 失败: {}", resp));
     };
 
-    // Step 2: 执行
+    // Step 2: 执行并读取输出（循环读直到 EOF）
     let start_body = serde_json::json!({"Detach": false, "Tty": false});
     let start_str = start_body.to_string();
     let start_request = format!(
@@ -113,32 +113,35 @@ async fn docker_exec(cmd: Vec<&str>) -> Result<String, String> {
     let mut stream2 = UnixStream::connect(socket_path).await.map_err(|e| format!("连接失败: {}", e))?;
     stream2.write_all(start_request.as_bytes()).await.map_err(|e| format!("执行失败: {}", e))?;
 
-    let mut buf2 = vec![0u8; 65536];
-    let n2 = stream2.read(&mut buf2).await.map_err(|e| format!("读取结果失败: {}", e))?;
-    let resp2 = String::from_utf8_lossy(&buf2[..n2]).to_string();
+    let mut result = Vec::new();
+    let mut tmp = vec![0u8; 8192];
+    loop {
+        match stream2.read(&mut tmp).await {
+            Ok(0) => break, // EOF
+            Ok(n) => result.extend_from_slice(&tmp[..n]),
+            Err(e) => return Err(format!("读取结果失败: {}", e)),
+        }
+    }
 
-    Ok(resp2)
+    Ok(result)
 }
 
 /// Reload nginx
 async fn reload_nginx() -> Result<String, String> {
     let resp = docker_exec(vec!["nginx", "-s", "reload"]).await?;
-    if resp.contains("200") || resp.contains("HTTP/1.1 200") {
-        Ok("nginx reload 成功".to_string())
-    } else {
-        Ok(format!("nginx reload 已发送"))
-    }
+    let output = extract_exec_body(&resp);
+    let _ = output; // reload 无需检查输出
+    Ok("nginx reload 成功".to_string())
 }
 
 /// Test nginx config
 async fn test_nginx_config() -> Result<String, String> {
     let resp = docker_exec(vec!["nginx", "-t"]).await?;
-    // 解析 stdout/stderr (Docker stream protocol 有 8 byte header)
-    // 简化处理：检查是否包含 "successful"
-    if resp.contains("successful") || resp.contains("ok") {
+    let output = extract_exec_body(&resp);
+    if output.contains("successful") || output.contains("ok") {
         Ok("配置测试通过".to_string())
     } else {
-        Err(format!("配置测试失败: {}", resp.lines().last().unwrap_or("")))
+        Err(format!("配置测试失败: {}", output))
     }
 }
 
@@ -279,24 +282,30 @@ pub async fn delete_nginx_config(
 // ─── API: 主配置文件 ──────────────────────────────────
 
 /// GET /api/v1/nginx/main-conf — 读取主配置文件
-/// 实际读取 nginx 容器内的 /etc/nginx/nginx.conf，通过 staging 文件中转
+/// 优先读取共享卷中的 staging 文件，不存在时才通过 docker exec 获取并缓存
 pub async fn get_main_conf() -> Json<serde_json::Value> {
-    // 先尝试通过 docker exec 读取
+    // 优先: 从共享卷 staging 文件读取（最可靠）
+    let staging = std::path::Path::new(NGINX_MAIN_CONF_STAGING);
+    if staging.exists() {
+        if let Ok(content) = std::fs::read_to_string(staging) {
+            if !content.is_empty() {
+                return Json(serde_json::json!({ "content": content }));
+            }
+        }
+    }
+
+    // 降级: 通过 docker exec 读取 nginx 容器内的原始配置，同时缓存到 staging
     match docker_exec(vec!["cat", "/etc/nginx/nginx.conf"]).await {
-        Ok(resp) => {
-            // Docker exec 的响应是 HTTP 响应 + stream body
-            // 解析出 body 部分（跳过 HTTP header）
-            let content = extract_exec_body(&resp);
-            Json(serde_json::json!({ "content": content }))
+        Ok(raw_bytes) => {
+            let content = extract_exec_body(&raw_bytes);
+            if !content.is_empty() {
+                // 缓存到 staging 文件，下次直接读
+                let _ = std::fs::write(staging, &content);
+                return Json(serde_json::json!({ "content": content }));
+            }
+            Json(serde_json::json!({ "content": "", "error": "exec 返回空内容" }))
         }
         Err(e) => {
-            // 降级：尝试读取 staging 文件
-            let staging = std::path::Path::new(NGINX_MAIN_CONF_STAGING);
-            if staging.exists() {
-                if let Ok(content) = std::fs::read_to_string(staging) {
-                    return Json(serde_json::json!({ "content": content }));
-                }
-            }
             Json(serde_json::json!({ "content": "", "error": e }))
         }
     }
@@ -344,27 +353,46 @@ pub async fn test_config() -> Json<serde_json::Value> {
     }
 }
 
-/// 从 docker exec HTTP 响应中提取出执行结果正文
-fn extract_exec_body(raw: &str) -> String {
-    // Docker exec 响应格式：HTTP header + \r\n\r\n + stream (带8字节帧头)
-    if let Some(body_start) = raw.find("\r\n\r\n") {
-        let body = &raw[body_start + 4..];
-        // Docker stream protocol: 每帧前8字节是 [type(1), 0, 0, 0, size(4)]
-        // 简化处理：跳过不可打印字符，提取可读内容
-        let mut result = String::new();
-        let bytes = body.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] < 0x20 && bytes[i] != b'\n' && bytes[i] != b'\r' && bytes[i] != b'\t' {
-                // 跳过 header 帧 (8 bytes)
-                i += 8;
-                continue;
-            }
-            result.push(bytes[i] as char);
-            i += 1;
+/// 按 Docker Multiplexed Stream 协议解析 exec 输出
+/// 协议格式: [stream_type(1B)] [padding(3B)] [size(4B big-endian)] [payload(size B)] ...
+fn extract_exec_body(raw: &[u8]) -> String {
+    // 先跳过 HTTP 响应头（找到 \r\n\r\n）
+    let body_start = raw.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
+        .unwrap_or(0);
+
+    let mut body = &raw[body_start..];
+
+    // 如果服务器用 chunked transfer encoding，跳过 chunk size 行
+    // chunked 格式: <hex_size>\r\n<data>\r\n
+    // 简单检测：第一个字节是否是 hex 字符
+    if body.first().map(|b| b.is_ascii_hexdigit()).unwrap_or(false) {
+        // 跳过 chunk size 行
+        if let Some(end) = body.windows(2).position(|w| w == b"\r\n") {
+            body = &body[end + 2..];
         }
-        result.trim().to_string()
-    } else {
-        raw.to_string()
     }
+
+    // 解析 Docker multiplexed stream frames
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i + 8 <= body.len() {
+        let stream_type = body[i];
+        // stream_type: 0=stdin, 1=stdout, 2=stderr
+        let size = u32::from_be_bytes([body[i+4], body[i+5], body[i+6], body[i+7]]) as usize;
+        i += 8;
+        if i + size > body.len() {
+            // 数据不完整，取剩余全部
+            result.extend_from_slice(&body[i..]);
+            break;
+        }
+        if stream_type == 1 || stream_type == 2 {
+            // stdout 或 stderr 都收集
+            result.extend_from_slice(&body[i..i+size]);
+        }
+        i += size;
+    }
+
+    String::from_utf8_lossy(&result).trim().to_string()
 }
