@@ -239,14 +239,30 @@ pub async fn list_nginx_configs() -> Json<serde_json::Value> {
             let filename = entry.file_name().to_string_lossy().to_string();
             if filename.starts_with("waf_site_") && filename.ends_with(".conf") {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    // 修复逻辑炸弹1: 以空格或分号分割，只取第一个词，兼容
-                    // "listen 80;", "listen 443 ssl;", "listen 80 default_server;"
+                    // 从 server block 中解析监听端口，兼容多种格式：
+                    // "listen 80;"  "listen  8090;"（多空格）  "listen 443 ssl;"
+                    // "listen [::]:8090;"（IPv6）  "listen 0.0.0.0:8090;"（IP:Port）
                     let port = content.lines()
-                        .find(|l| l.trim().starts_with("listen"))
-                        .and_then(|l| l.trim().strip_prefix("listen "))
-                        .and_then(|rest| rest.split(|c| c == ' ' || c == ';').next())
-                        .and_then(|s| s.trim().parse::<u16>().ok())
+                        .filter(|l| {
+                            let t = l.trim();
+                            t.starts_with("listen")
+                                && t.len() > 6
+                                && t.as_bytes()[6].is_ascii_whitespace()
+                        })
+                        .find_map(|l| {
+                            let rest = l.trim()["listen".len()..].trim();
+                            let token = rest.split(|c: char| c == ' ' || c == ';').next()?.trim();
+                            if token.is_empty() { return None; }
+                            // 处理 IPv6 "[::]:8090" 或 IP:Port "0.0.0.0:8090"
+                            let port_str = if token.contains(':') {
+                                token.rsplit(':').next()?.trim()
+                            } else {
+                                token
+                            };
+                            port_str.parse::<u16>().ok()
+                        })
                         .unwrap_or(0);
+
 
                     let server_name = content.lines()
                         .find(|l| l.trim().starts_with("server_name"))

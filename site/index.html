@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mini-WAF | 轻量级高性能 Web 应用防火墙</title>
     <link rel="icon" type="image/svg+xml" href="favicon.png" />
-    <meta name="description" content="Mini-WAF 是基于 Rust 构建的轻量级 Web 应用防火墙，支持反向代理、域名路由、IP 黑白名单、攻击拦截，一键 Docker 部署。">
+    <meta name="description" content="Mini-WAF 是基于 Rust 构建的轻量级 Web 应用防火墙，支持反向代理、域名路由、IP 黑白名单、攻击拦截、SSL 证书自动管理，一键 Docker 部署。">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -203,7 +203,7 @@
             <h1 class="fade-up delay-1">轻量级<br><span class="gradient-text">Web 应用防火墙</span></h1>
             <p class="hero-desc fade-up delay-2">
                 基于 Rust + Tokio 构建的高性能反向代理网关。<br>
-                支持域名路由、攻击拦截、IP 管控、Nginx 管理，开箱即用。
+                支持域名路由、攻击拦截、IP 管控、Nginx 管理、<strong style="color:#00f0ff">SSL 证书自动管理</strong>，开箱即用。
             </p>
             <div class="hero-actions fade-up delay-3">
                 <a href="#deploy" class="btn btn-primary">一键安装</a>
@@ -266,6 +266,14 @@
                 </div>
                 <h3>Docker 一键部署</h3>
                 <p>完整 docker-compose 编排，包含 WAF、Nginx、MySQL，一条命令启动全部服务，支持多架构镜像。</p>
+            </div>
+
+            <div class="feature-card reveal" data-glow>
+                <div class="card-icon gradient-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00f0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="floating-icon delay-2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path><circle cx="12" cy="16" r="1"></circle></svg>
+                </div>
+                <h3>SSL 证书自动管理</h3>
+                <p>内置 ACME 客户端，支持 Let's Encrypt / ZeroSSL 自动申请、通配符证书、独立 DNS 凭证列表，到期自动续签，无需手动干预。</p>
             </div>
         </div>
     </section>
@@ -421,6 +429,11 @@
                 <div class="step-num">D</div>
                 <h4>监控日志</h4>
                 <p>在「攻击日志」和「访问日志」中实时查看流量情况，可按 IP、时间、规则等筛选定位异常请求。</p>
+            </div>
+            <div class="step-card">
+                <div class="step-num">E</div>
+                <h4>SSL 证书</h4>
+                <p>在「SSL 证书管理」中添加 ACME 账号和 DNS 凭证，一键申请 Let's Encrypt 证书（含通配符），并自动续签。</p>
             </div>
         </div>
     </section>

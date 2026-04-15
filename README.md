@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/LYX9527/mini-waf?style=flat-square&color=7000ff)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
-*基于 Rust + Tokio + Hyper 构建 · 域名路由 · 攻击拦截 · Docker 一键部署*
+*基于 Rust + Tokio + Hyper 构建 · 域名路由 · 攻击拦截 · SSL 证书自动管理 · Docker 一键部署*
 
 </div>
 
@@ -41,6 +41,7 @@
 | **Nginx 管理** | 可视化编辑配置，保存后自动 reload，无需 SSH |
 | **实时监控** | 访问日志、攻击日志、QPS 大盘、地理位置溯源 |
 | **负载均衡** | Round-Robin 轮询多上游节点，自动健康检查剔除 |
+| **SSL 证书管理** | ACME 自动申请（Let's Encrypt / ZeroSSL）、独立 DNS 凭证列表、通配符证书、到期进度监控与自动续签 |
 
 ## 快速部署
 
@@ -126,6 +127,46 @@ server {
 - 匹配目标：URL、请求头、请求体、User-Agent
 - 热重载：添加规则立即生效，无需重启
 
+### 4. SSL 证书管理
+
+管理控制台 → **SSL 证书管理** 包含三个模块：
+
+#### 证书列表
+- X.509 到期时间解析与进度条展示
+- 单证书独立自动续签开关
+- 一键生成 Nginx SSL 配置模板
+- 手动上传 PEM 证书（支持商业 CA、ZeroSSL 等）
+
+#### ACME 账号 (与 DNS 凭证完全解耦)
+支持配置多个 ACME 账号（邮箱 + CA 服务器）：
+
+| CA 服务器 | 说明 |
+|---|---|
+| Let's Encrypt 正式版 | 生产环境使用 |
+| Let's Encrypt 测试版 | 调试时不消耗配额 |
+| ZeroSSL | 备用 CA |
+
+#### DNS 凭证 (独立列表，可复用)
+
+| DNS 提供商 | 所需凭证 | 支持通配符 |
+|---|---|---|
+| Cloudflare | `CF_DNS_API_TOKEN` + `CF_ZONE_API_TOKEN` | ✅ |
+| DNSPod | `DP_Id` + `DP_Key` | ✅ |
+| 阿里云 | `Ali_Key` + `Ali_Secret` | ✅ |
+| Hurricane Electric | `HE_Username` | ✅ |
+| 无（HTTP-01）| 不需要凭证，需要 80 端口 | ❌ 不支持 |
+
+#### 申请流程
+
+```
+申请证书
+  ├─ 选择 ACME 账号      ← 注册到哪个 CA
+  ├─ 选择 DNS 凭证 (可空) ← 空 = HTTP-01，不支持通配符
+  ├─ 填写域名
+  └─ 开启通配符 (需 DNS 凭证)
+```
+
+
 ## 项目结构
 
 ```
@@ -140,10 +181,14 @@ mini-waf/
 │   └── api/
 │       ├── routes.rs        # 站点路由 CRUD API
 │       ├── nginx.rs         # Nginx 配置管理 API
+│       ├── ssl.rs           # SSL 证书 / ACME 账号 / DNS 凭证 API
 │       ├── logs.rs          # 日志查询 API
 │       └── ...
 ├── admin_frontend/          # React + Ant Design 管理控制台
 ├── migrations/              # sqlx 数据库迁移文件
+│   ├── ...ssl_tables.sql    # ssl_certs / acme_config 表
+│   ├── ...acme_accounts.sql # ACME 账号多账号支持
+│   └── ...dns_credentials.sql # DNS 凭证独立列表
 ├── docker/
 │   └── docker-compose.yml   # 完整编排：WAF + Nginx + MySQL
 ├── install/
