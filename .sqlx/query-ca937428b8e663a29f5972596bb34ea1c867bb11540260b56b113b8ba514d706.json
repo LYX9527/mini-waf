@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT path_prefix, upstream, route_type FROM routes WHERE status = 1",
+  "query": "SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -8,12 +8,21 @@
         "name": "path_prefix",
         "type_info": {
           "type": "VarString",
-          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
           "max_size": 1020
         }
       },
       {
         "ordinal": 1,
+        "name": "host_pattern",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "upstream",
         "type_info": {
           "type": "VarString",
@@ -22,7 +31,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "route_type",
         "type_info": {
           "type": "String",
@@ -32,13 +41,14 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "62aefbf74e654a5cf63b9c82844ed91fcbc847d0ec5bdc7980bff4cc68b949e2"
+  "hash": "ca937428b8e663a29f5972596bb34ea1c867bb11540260b56b113b8ba514d706"
 }

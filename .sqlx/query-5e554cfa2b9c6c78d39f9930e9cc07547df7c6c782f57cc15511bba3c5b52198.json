@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT path_prefix, upstream, route_type, status FROM routes ORDER BY LENGTH(path_prefix) DESC",
+  "query": "SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE status = 1",
   "describe": {
     "columns": [
       {
@@ -8,12 +8,21 @@
         "name": "path_prefix",
         "type_info": {
           "type": "VarString",
-          "flags": "NOT_NULL | UNIQUE_KEY | NO_DEFAULT_VALUE",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
           "max_size": 1020
         }
       },
       {
         "ordinal": 1,
+        "name": "host_pattern",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "upstream",
         "type_info": {
           "type": "VarString",
@@ -22,21 +31,12 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "route_type",
         "type_info": {
           "type": "String",
           "flags": "NOT_NULL | ENUM",
           "max_size": 24
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "status",
-        "type_info": {
-          "type": "Tiny",
-          "flags": "NOT_NULL",
-          "max_size": 4
         }
       }
     ],
@@ -45,10 +45,10 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       false,
       false
     ]
   },
-  "hash": "b98b7b4c241c03806c0faef35861f838620b77febc15ee34db4d5c234c15a078"
+  "hash": "5e554cfa2b9c6c78d39f9930e9cc07547df7c6c782f57cc15511bba3c5b52198"
 }

@@ -5,7 +5,9 @@ import api from '../api/client'
 import message from '../utils/messageApi'
 
 interface RouteItem {
+  id: number
   path_prefix: string
+  host_pattern?: string | null
   upstream: string
   route_type: string
   is_spa: boolean
@@ -23,7 +25,7 @@ export default function SiteManagement() {
   const [routes, setRoutes] = useState<RouteItem[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [editingRoute, setEditingRoute] = useState<string | null>(null)
+  const [editingRoute, setEditingRoute] = useState<{ id: number; path_prefix: string } | null>(null)
   const [form] = Form.useForm()
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthInfo>>({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
@@ -44,8 +46,10 @@ export default function SiteManagement() {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields()
+      // normalize: empty string -> undefined (so backend stores NULL)
+      if (!values.host_pattern) values.host_pattern = undefined
       if (editingRoute) {
-        await api.put('/routes/edit', { ...values, old_path_prefix: editingRoute })
+        await api.put('/routes/edit', { ...values, old_path_prefix: editingRoute.path_prefix })
         message.success('路由更新成功')
       } else {
         await api.post('/routes', values)
@@ -63,17 +67,18 @@ export default function SiteManagement() {
   const handleEditClick = (record: RouteItem) => {
     form.setFieldsValue({
       path_prefix: record.path_prefix,
+      host_pattern: record.host_pattern || '',
       route_type: record.route_type,
       upstream: record.upstream,
       is_spa: record.is_spa,
     })
-    setEditingRoute(record.path_prefix)
+    setEditingRoute({ id: record.id, path_prefix: record.path_prefix })
     setModalOpen(true)
   }
 
-  const handleDisable = async (prefix: string) => {
+  const handleDisable = async (id: number) => {
     try {
-      await api.post('/routes/disable', { path_prefix: prefix })
+      await api.post('/routes/disable', { id })
       message.success('路由已停用')
       fetchRoutes()
     } catch {
@@ -81,9 +86,9 @@ export default function SiteManagement() {
     }
   }
 
-  const handleRealDelete = async (prefix: string) => {
+  const handleRealDelete = async (id: number) => {
     try {
-      await api.delete('/routes', { data: { path_prefix: prefix } })
+      await api.delete('/routes', { data: { id } })
       message.success('路由已彻底删除')
       fetchRoutes()
     } catch {
@@ -91,9 +96,9 @@ export default function SiteManagement() {
     }
   }
 
-  const handleEnable = async (prefix: string) => {
+  const handleEnable = async (id: number) => {
     try {
-      await api.post('/routes/enable', { path_prefix: prefix })
+      await api.post('/routes/enable', { id })
       message.success('路由已启用')
       fetchRoutes()
     } catch {
@@ -153,6 +158,15 @@ export default function SiteManagement() {
       render: (text: string) => <Tag color="blue">{text}</Tag>,
     },
     {
+      title: '域名限制',
+      dataIndex: 'host_pattern',
+      key: 'host_pattern',
+      width: 180,
+      render: (h: string | null) => h
+        ? <Tag color="purple">{h}</Tag>
+        : <span style={{ color: '#484f58', fontSize: 12 }}>不限</span>,
+    },
+    {
       title: '目标地址',
       dataIndex: 'upstream',
       key: 'upstream',
@@ -181,16 +195,16 @@ export default function SiteManagement() {
             </Button>
           )}
           {record.is_active === false ? (
-            <Button size="small" type="primary" onClick={() => handleEnable(record.path_prefix)}>
+            <Button size="small" type="primary" onClick={() => handleEnable(record.id)}>
               启用
             </Button>
           ) : (
-            <Popconfirm title="确定停用此路由？" onConfirm={() => handleDisable(record.path_prefix)}>
+            <Popconfirm title="确定停用此路由？" onConfirm={() => handleDisable(record.id)}>
               <Button size="small" type="dashed">停用</Button>
             </Popconfirm>
           )}
           <Button size="small" onClick={() => handleEditClick(record)}>编辑</Button>
-          <Popconfirm title="确定要彻底删除此路由吗？关联记录将丢失。" onConfirm={() => handleRealDelete(record.path_prefix)}>
+          <Popconfirm title="确定要彻底删除此路由吗？关联记录将丢失。" onConfirm={() => handleRealDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </div>
@@ -215,7 +229,7 @@ export default function SiteManagement() {
       <Table
         dataSource={routes}
         columns={columns}
-        rowKey="path_prefix"
+        rowKey="id"
         loading={loading}
         pagination={false}
       />
@@ -230,7 +244,18 @@ export default function SiteManagement() {
       >
         <Form form={form} layout="vertical" initialValues={{ route_type: 'proxy', is_spa: false }}>
           <Form.Item name="path_prefix" label="路径前缀" rules={[{ required: true, message: '请输入路径前缀' }]}>
-            <Input placeholder="/api 或 /app" />
+            <Input placeholder="/ 或 /api 或 /app" />
+          </Form.Item>
+          <Form.Item
+            name="host_pattern"
+            label={
+              <span>
+                域名限制&nbsp;
+                <span style={{ color: '#8b949e', fontSize: 12, fontWeight: 400 }}>（可选，不填则匹配所有域名）</span>
+              </span>
+            }
+          >
+            <Input placeholder="api.example.com 或 *.example.com" />
           </Form.Item>
           <Form.Item name="route_type" hidden initialValue="proxy">
             <Input />
@@ -241,6 +266,21 @@ export default function SiteManagement() {
           <Form.Item name="is_spa" hidden valuePropName="checked">
             <Switch />
           </Form.Item>
+          <div style={{
+            background: 'rgba(0,240,255,0.04)',
+            border: '1px solid rgba(0,240,255,0.12)',
+            borderRadius: 6,
+            padding: '10px 14px',
+            color: '#8b949e',
+            fontSize: 12,
+            lineHeight: '20px',
+          }}>
+            <div style={{ color: '#c9d1d9', marginBottom: 4, fontWeight: 500 }}>路由匹配逻辑</div>
+            支持同时配置多条路由以区分不同域名的服务：<br />
+            • <code style={{color:'#00f0ff'}}>api.example.com</code> + <code style={{color:'#00f0ff'}}>/</code> → 后端 A<br />
+            • <code style={{color:'#00f0ff'}}>web.example.com</code> + <code style={{color:'#00f0ff'}}>/</code> → 后端 B<br />
+            • 不填域名 + <code style={{color:'#00f0ff'}}>/api</code> → 通配路由，所有域名均可匹配
+          </div>
         </Form>
       </Modal>
     </div>

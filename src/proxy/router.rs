@@ -7,21 +7,55 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
+/// 匹配 Host 头部: 支持精确匹配和通配符 *.example.com
+fn host_matches(pattern: &str, host: &str) -> bool {
+    // 去掉端口号
+    let host = host.split(':').next().unwrap_or(host);
+    let pattern = pattern.split(':').next().unwrap_or(pattern);
+
+    if pattern.starts_with("*.") {
+        // 通配符匹配：*.example.com 匹配 a.example.com、b.example.com
+        let suffix = &pattern[1..]; // .example.com
+        host.ends_with(suffix) && host.len() > suffix.len()
+    } else {
+        // 精确匹配（忽略大小写）
+        host.eq_ignore_ascii_case(pattern)
+    }
+}
+
 /// Stage 4+5: 路由匹配 + 反向代理分发
 pub async fn route_and_proxy(
     req: Request<Incoming>,
     ctx: &RequestContext,
     state: &AppState,
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
-    // 最长前缀匹配
+    // 从请求头获取 Host（去掉端口号，转小写）
+    let req_host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 路由匹配：Host + 最长路径前缀
+    // 优先级：有 host_pattern 的路由 > 无 host_pattern（通配）的路由
     let routes = state.routes.read().await;
     let matched = routes
         .iter()
         .find(|r| {
-            ctx.path.starts_with(&r.path_prefix)
+            // 先检查路径前缀
+            let path_ok = ctx.path.starts_with(&r.path_prefix)
                 && (r.path_prefix == "/"
                     || ctx.path.len() == r.path_prefix.len()
-                    || ctx.path.as_bytes()[r.path_prefix.len()] == b'/')
+                    || ctx.path.as_bytes()[r.path_prefix.len()] == b'/');
+            if !path_ok {
+                return false;
+            }
+            // 再检查域名
+            match &r.host_pattern {
+                Some(pattern) => host_matches(pattern, &req_host),
+                None => true, // 无 host 限制，匹配所有
+            }
         })
         .cloned();
     drop(routes);

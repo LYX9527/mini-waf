@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE routes SET status = 0 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "bb02a2aa1f0cf11154ed38b179dd528b6782dacabe7c8253c72fd2be41a53baa"
+}

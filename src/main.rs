@@ -44,8 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     log_success!("RULE_ENG", "已从数据库成功加载 {} 条防御规则", initial_rules.len());
 
     // 3. 加载微服务路由表 (按前缀长度降序，最长前缀匹配优先)
+    // 排序规则：有 host_pattern 的路由排在前面（优先级更高），然后按路径长度降序
     let route_records = sqlx::query!(
-        "SELECT path_prefix, upstream, route_type FROM routes WHERE status = 1"
+        "SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE status = 1"
     )
     .fetch_all(&pool)
     .await?;
@@ -53,12 +54,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into_iter()
         .map(|r| Route {
             path_prefix: r.path_prefix,
+            host_pattern: r.host_pattern,
             upstream: r.upstream,
             route_type: RouteType::Proxy,
             rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .collect();
-    initial_routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+    // 有 host_pattern 的路由优先级 > 路径更长的路由 > 通配路由
+    initial_routes.sort_by(|a, b| {
+        match (a.host_pattern.is_some(), b.host_pattern.is_some()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.path_prefix.len().cmp(&a.path_prefix.len()),
+        }
+    });
 
     log_success!("ROUTER", "已从数据库加载 {} 个路由", initial_routes.len());
 

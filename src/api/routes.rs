@@ -22,17 +22,19 @@ pub struct EditRouteRequest {
     pub old_path_prefix: String,
     pub path_prefix: String,
     pub upstream: String,
+    pub host_pattern: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct AddRouteRequest {
     pub path_prefix: String,
     pub upstream: String,
+    pub host_pattern: Option<String>,
 }
 
 #[derive(Deserialize)]
-pub struct DeleteRouteRequest {
-    pub path_prefix: String,
+pub struct RouteIdRequest {
+    pub id: i64,
 }
 
 /// GET /rules: 获取当前所有拦截规则
@@ -126,7 +128,7 @@ pub async fn delete_rule(
 }
 /// GET /routes: 列出所有路由
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let records = sqlx::query!("SELECT path_prefix, upstream, route_type, status FROM routes ORDER BY LENGTH(path_prefix) DESC")
+    let records = sqlx::query!("SELECT id, path_prefix, host_pattern, upstream, route_type, status FROM routes ORDER BY host_pattern IS NULL ASC, LENGTH(path_prefix) DESC")
         .fetch_all(&state.db_pool)
         .await
         .unwrap_or_default();
@@ -135,7 +137,9 @@ pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::
         .into_iter()
         .map(|r| {
             serde_json::json!({
+                "id": r.id,
                 "path_prefix": r.path_prefix,
+                "host_pattern": r.host_pattern,
                 "upstream": r.upstream,
                 "route_type": r.route_type,
                 "is_active": r.status == 1,
@@ -151,8 +155,9 @@ pub async fn add_route(
     Json(payload): Json<AddRouteRequest>,
 ) -> Json<serde_json::Value> {
     let insert_result = sqlx::query!(
-        "INSERT INTO routes (path_prefix, upstream, route_type, is_spa, status) VALUES (?, ?, 'proxy', 0, 1)",
+        "INSERT INTO routes (path_prefix, host_pattern, upstream, route_type, is_spa, status) VALUES (?, ?, ?, 'proxy', 0, 1)",
         payload.path_prefix,
+        payload.host_pattern,
         payload.upstream,
     )
     .execute(&state.db_pool)
@@ -162,13 +167,20 @@ pub async fn add_route(
         Ok(_) => {
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
+                host_pattern: payload.host_pattern,
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
             routes.push(new_route);
-            routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+            routes.sort_by(|a, b| {
+                match (a.host_pattern.is_some(), b.host_pattern.is_some()) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.path_prefix.len().cmp(&a.path_prefix.len()),
+                }
+            });
             Json(serde_json::json!({
                 "status": "success",
                 "message": format!("路由 '{}' 已添加", payload.path_prefix)
@@ -184,22 +196,30 @@ pub async fn add_route(
 /// POST /routes/disable: 停用一条路由
 pub async fn disable_route(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<DeleteRouteRequest>,
+    Json(payload): Json<RouteIdRequest>,
 ) -> Json<serde_json::Value> {
-    let result = sqlx::query!(
-        "UPDATE routes SET status = 0 WHERE path_prefix = ?",
-        payload.path_prefix
-    )
-    .execute(&state.db_pool)
-    .await;
+    // 先查出该路由的 path_prefix 和 host_pattern，用于后续清理内存
+    let route_info = sqlx::query!("SELECT path_prefix, host_pattern FROM routes WHERE id = ?", payload.id)
+        .fetch_optional(&state.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+    let result = sqlx::query!("UPDATE routes SET status = 0 WHERE id = ?", payload.id)
+        .execute(&state.db_pool)
+        .await;
 
     match result {
         Ok(_) => {
-            let mut routes = state.routes.write().await;
-            routes.retain(|r| r.path_prefix != payload.path_prefix);
+            if let Some(r) = route_info {
+                let mut routes = state.routes.write().await;
+                routes.retain(|rt| {
+                    !(rt.path_prefix == r.path_prefix && rt.host_pattern == r.host_pattern)
+                });
+            }
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("路由 '{}' 已停用", payload.path_prefix)
+                "message": "路由已停用"
             }))
         }
         Err(e) => Json(serde_json::json!({
@@ -212,22 +232,29 @@ pub async fn disable_route(
 /// DELETE /routes: 彻底删除一条路由
 pub async fn real_delete_route(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<DeleteRouteRequest>,
+    Json(payload): Json<RouteIdRequest>,
 ) -> Json<serde_json::Value> {
-    let result = sqlx::query!(
-        "DELETE FROM routes WHERE path_prefix = ?",
-        payload.path_prefix
-    )
-    .execute(&state.db_pool)
-    .await;
+    let route_info = sqlx::query!("SELECT path_prefix, host_pattern FROM routes WHERE id = ?", payload.id)
+        .fetch_optional(&state.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+    let result = sqlx::query!("DELETE FROM routes WHERE id = ?", payload.id)
+        .execute(&state.db_pool)
+        .await;
 
     match result {
         Ok(_) => {
-            let mut routes = state.routes.write().await;
-            routes.retain(|r| r.path_prefix != payload.path_prefix);
+            if let Some(r) = route_info {
+                let mut routes = state.routes.write().await;
+                routes.retain(|rt| {
+                    !(rt.path_prefix == r.path_prefix && rt.host_pattern == r.host_pattern)
+                });
+            }
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("路由 '{}' 已删除", payload.path_prefix)
+                "message": "路由已删除"
             }))
         }
         Err(e) => Json(serde_json::json!({
@@ -238,7 +265,7 @@ pub async fn real_delete_route(
 }
 #[derive(Deserialize)]
 pub struct EnableRouteRequest {
-    pub path_prefix: String,
+    pub id: i64,
 }
 
 /// POST /routes/enable: 启用一条路由
@@ -246,30 +273,35 @@ pub async fn enable_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EnableRouteRequest>,
 ) -> Json<serde_json::Value> {
-    let result = sqlx::query!(
-        "UPDATE routes SET status = 1 WHERE path_prefix = ?",
-        payload.path_prefix
-    )
-    .execute(&state.db_pool)
-    .await;
+    let result = sqlx::query!("UPDATE routes SET status = 1 WHERE id = ?", payload.id)
+        .execute(&state.db_pool)
+        .await;
 
     match result {
         Ok(_) => {
-            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, upstream, route_type FROM routes WHERE path_prefix = ?", payload.path_prefix).fetch_optional(&state.db_pool).await {
+            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE id = ?", payload.id).fetch_optional(&state.db_pool).await {
                 let mut routes = state.routes.write().await;
-                if !routes.iter().any(|rt| rt.path_prefix == payload.path_prefix) {
+                let already = routes.iter().any(|rt| rt.path_prefix == r.path_prefix && rt.host_pattern == r.host_pattern);
+                if !already {
                     routes.push(Route {
                         path_prefix: r.path_prefix.clone(),
+                        host_pattern: r.host_pattern,
                         upstream: r.upstream,
                         route_type: RouteType::Proxy,
                         rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
-                    routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+                    routes.sort_by(|a, b| {
+                        match (a.host_pattern.is_some(), b.host_pattern.is_some()) {
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            _ => b.path_prefix.len().cmp(&a.path_prefix.len()),
+                        }
+                    });
                 }
             }
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("路由 '{}' 已启用", payload.path_prefix)
+                "message": "路由已启用"
             }))
         }
         Err(e) => Json(serde_json::json!({
@@ -316,8 +348,9 @@ pub async fn edit_route(
     Json(payload): Json<EditRouteRequest>,
 ) -> Json<serde_json::Value> {
     let update_result = sqlx::query!(
-        "UPDATE routes SET path_prefix = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ?",
+        "UPDATE routes SET path_prefix = ?, host_pattern = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ?",
         payload.path_prefix,
+        payload.host_pattern,
         payload.upstream,
         payload.old_path_prefix
     )
@@ -330,12 +363,19 @@ pub async fn edit_route(
             routes.retain(|r| r.path_prefix != payload.old_path_prefix);
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
+                host_pattern: payload.host_pattern,
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             routes.push(new_route);
-            routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
+            routes.sort_by(|a, b| {
+                match (a.host_pattern.is_some(), b.host_pattern.is_some()) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.path_prefix.len().cmp(&a.path_prefix.len()),
+                }
+            });
             
             Json(serde_json::json!({
                 "status": "success",

@@ -44,6 +44,8 @@ pub enum RouteType {
 #[derive(Clone, Debug)]
 pub struct Route {
     pub path_prefix: String,
+    /// 域名匹配模式，None 表示匹配所有域名，支持通配符 *.example.com
+    pub host_pattern: Option<String>,
     pub upstream: String, // host:port
     pub route_type: RouteType,
     pub rr_counter: Arc<AtomicUsize>,
