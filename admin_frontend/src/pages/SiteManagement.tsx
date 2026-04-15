@@ -1,7 +1,8 @@
-import { Table, Button, Modal, Form, Input, Select, Switch, message, Tag, Popconfirm, Badge } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Switch, Tag, Popconfirm, Badge } from 'antd'
 import { PlusOutlined, DeleteOutlined, CheckCircleOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 interface RouteItem {
   path_prefix: string
@@ -54,8 +55,8 @@ export default function SiteManagement() {
       setEditingRoute(null)
       form.resetFields()
       fetchRoutes()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '保存失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -75,8 +76,8 @@ export default function SiteManagement() {
       await api.post('/routes/disable', { path_prefix: prefix })
       message.success('路由已停用')
       fetchRoutes()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '停用失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -85,8 +86,8 @@ export default function SiteManagement() {
       await api.delete('/routes', { data: { path_prefix: prefix } })
       message.success('路由已彻底删除')
       fetchRoutes()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '删除失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -95,8 +96,8 @@ export default function SiteManagement() {
       await api.post('/routes/enable', { path_prefix: prefix })
       message.success('路由已启用')
       fetchRoutes()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '启用失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -120,10 +121,9 @@ export default function SiteManagement() {
 
   const checkAllProxy = async () => {
     for (const r of routes) {
-      if (r.route_type === 'proxy') {
-        // eslint-disable-next-line no-await-in-loop
-        await checkHealth(r.path_prefix, r.upstream)
-      }
+      if (r.is_active === false) continue
+      // eslint-disable-next-line no-await-in-loop
+      await checkHealth(r.path_prefix, r.upstream)
     }
   }
 
@@ -134,9 +134,6 @@ export default function SiteManagement() {
   const statusDot = (record: RouteItem) => {
     if (record.is_active === false) {
       return <Badge color="#f5222d" text={<span style={{ color: '#f5222d' }}>已停用</span>} />
-    }
-    if (record.route_type === 'static') {
-      return <Badge color="#8b949e" text={<span style={{ color: '#8b949e' }}>静态</span>} />
     }
     const info = healthStatus[record.path_prefix] || { status: 'unknown' }
     const config: Record<HealthStatus, { color: string; text: string }> = {
@@ -156,26 +153,10 @@ export default function SiteManagement() {
       render: (text: string) => <Tag color="blue">{text}</Tag>,
     },
     {
-      title: '类型',
-      dataIndex: 'route_type',
-      key: 'route_type',
-      render: (type: string) => (
-        <Tag color={type === 'proxy' ? 'green' : 'purple'}>
-          {type === 'proxy' ? '反向代理' : '静态文件'}
-        </Tag>
-      ),
-    },
-    {
-      title: '目标',
+      title: '目标地址',
       dataIndex: 'upstream',
       key: 'upstream',
       ellipsis: true,
-    },
-    {
-      title: 'SPA',
-      dataIndex: 'is_spa',
-      key: 'is_spa',
-      render: (is_spa: boolean) => (is_spa ? <Tag color="cyan">SPA</Tag> : '-'),
     },
     {
       title: '状态',
@@ -189,7 +170,7 @@ export default function SiteManagement() {
       width: 400,
       render: (_: any, record: RouteItem) => (
         <div style={{ display: 'flex', gap: 8 }}>
-          {record.route_type === 'proxy' && (
+          {record.is_active !== false && (
             <Button
               size="small"
               icon={<CheckCircleOutlined />}
@@ -251,16 +232,13 @@ export default function SiteManagement() {
           <Form.Item name="path_prefix" label="路径前缀" rules={[{ required: true, message: '请输入路径前缀' }]}>
             <Input placeholder="/api 或 /app" />
           </Form.Item>
-          <Form.Item name="route_type" label="路由类型" rules={[{ required: true }]}>
-            <Select>
-              <Select.Option value="proxy">反向代理 (host:port)</Select.Option>
-              <Select.Option value="static">静态文件 (目录路径)</Select.Option>
-            </Select>
+          <Form.Item name="route_type" hidden initialValue="proxy">
+            <Input />
           </Form.Item>
           <Form.Item name="upstream" label="目标地址" rules={[{ required: true, message: '请输入目标地址' }]}>
-            <Input placeholder="127.0.0.1:3000 或 /var/www/html" />
+            <Input placeholder="nginx:80 或 backend-service:3000" />
           </Form.Item>
-          <Form.Item name="is_spa" label="SPA 模式" valuePropName="checked">
+          <Form.Item name="is_spa" hidden valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

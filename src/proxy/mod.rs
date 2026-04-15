@@ -4,7 +4,6 @@ pub mod handler;
 pub mod health;
 pub mod response;
 pub mod router;
-pub mod static_file;
 pub mod tls;
 
 use crate::config;

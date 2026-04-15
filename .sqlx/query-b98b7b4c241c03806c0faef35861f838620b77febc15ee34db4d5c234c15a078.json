@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE status = 1",
+  "query": "SELECT path_prefix, upstream, route_type, status FROM routes ORDER BY LENGTH(path_prefix) DESC",
   "describe": {
     "columns": [
       {
@@ -32,11 +32,11 @@
       },
       {
         "ordinal": 3,
-        "name": "is_spa",
+        "name": "status",
         "type_info": {
           "type": "Tiny",
           "flags": "NOT_NULL",
-          "max_size": 1
+          "max_size": 4
         }
       }
     ],
@@ -50,5 +50,5 @@
       false
     ]
   },
-  "hash": "77c7a5c6b3998ca694649f86a9f4a94888020cb76e511afbf164eac685b11f10"
+  "hash": "b98b7b4c241c03806c0faef35861f838620b77febc15ee34db4d5c234c15a078"
 }

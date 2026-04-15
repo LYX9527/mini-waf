@@ -1,11 +1,13 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
-import { Spin } from 'antd'
+import { Spin, App as AntApp } from 'antd'
 import MainLayout from './components/Layout'
 import api from './api/client'
+import { setMessageApi } from './utils/messageApi'
 
 const Overview = lazy(() => import('./pages/Overview'))
 const SiteManagement = lazy(() => import('./pages/SiteManagement'))
+const NginxManagement = lazy(() => import('./pages/NginxManagement'))
 const AttackLogs = lazy(() => import('./pages/AttackLogs'))
 const AccessLogs = lazy(() => import('./pages/AccessLogs'))
 const IPLists = lazy(() => import('./pages/IPLists'))
@@ -45,7 +47,13 @@ const PrivateRoute = ({ children }: { children: JSX.Element }) => {
   return children
 }
 
-export default function App() {
+function AppContent() {
+  const { message } = AntApp.useApp()
+
+  useEffect(() => {
+    setMessageApi(message)
+  }, [message])
+
   return (
     <BrowserRouter>
       <Sentinel>
@@ -57,6 +65,7 @@ export default function App() {
             <Route index element={<Navigate to="/overview" replace />} />
             <Route path="overview" element={<Suspense fallback={<Loading />}><Overview /></Suspense>} />
             <Route path="sites" element={<Suspense fallback={<Loading />}><SiteManagement /></Suspense>} />
+            <Route path="nginx" element={<Suspense fallback={<Loading />}><NginxManagement /></Suspense>} />
             <Route path="logs/attacks" element={<Suspense fallback={<Loading />}><AttackLogs /></Suspense>} />
             <Route path="logs/access" element={<Suspense fallback={<Loading />}><AccessLogs /></Suspense>} />
             <Route path="ip-lists" element={<Suspense fallback={<Loading />}><IPLists /></Suspense>} />
@@ -67,4 +76,8 @@ export default function App() {
       </Sentinel>
     </BrowserRouter>
   )
+}
+
+export default function App() {
+  return <AppContent />
 }

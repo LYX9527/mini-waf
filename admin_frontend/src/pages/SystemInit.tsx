@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Card, Form, Input, Button, message, Alert } from 'antd'
+import { Card, Form, Input, Button, Alert } from 'antd'
 import { UserOutlined, LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 export default function SystemInit() {
   const [loading, setLoading] = useState(false)
@@ -19,11 +20,10 @@ export default function SystemInit() {
       if (res.data.status === 'success') {
         message.success('系统初始化完毕！请重新登录。')
         navigate('/login')
-      } else {
-        message.error(res.data.message || '初始化失败')
       }
-    } catch (err) {
-      message.error('网络请求失败')
+      // status=error 由拦截器处理
+    } catch {
+      // 拦截器已处理
     } finally {
       setLoading(false)
     }

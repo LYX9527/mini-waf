@@ -1,7 +1,8 @@
-import { Table, Button, Modal, Form, Input, Select, Tag, Popconfirm, message } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Tag, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 export default function SecurityRules() {
   const [rules, setRules] = useState<any[]>([])
@@ -34,8 +35,8 @@ export default function SecurityRules() {
       setModalOpen(false)
       form.resetFields()
       fetchRules()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '添加失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -44,8 +45,8 @@ export default function SecurityRules() {
       await api.delete('/rules', { data: { rule } })
       message.success('规则已删除')
       fetchRules()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '删除失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 

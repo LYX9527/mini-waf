@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod ip_lists;
 pub mod logs;
+pub mod nginx;
 pub mod routes;
 pub mod settings;
 pub mod stats;
@@ -58,6 +59,14 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         // 系统设置
         .route("/settings", get(settings::get_settings))
         .route("/settings", put(settings::update_settings))
+        // Nginx 配置管理
+        .route("/nginx/configs", get(nginx::list_nginx_configs))
+        .route("/nginx/configs", post(nginx::add_nginx_config))
+        .route("/nginx/configs", put(nginx::edit_nginx_config))
+        .route("/nginx/configs", delete(nginx::delete_nginx_config))
+        .route("/nginx/main-conf", get(nginx::get_main_conf))
+        .route("/nginx/main-conf", put(nginx::save_main_conf))
+        .route("/nginx/test", post(nginx::test_config))
         // 认证鉴权
         .route("/auth/check-init", get(auth::check_init))
         .route("/auth/init", post(auth::init_admin))

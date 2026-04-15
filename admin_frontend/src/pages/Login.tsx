@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Card, Form, Input, Button, message } from 'antd'
+import { Card, Form, Input, Button } from 'antd'
 import { UserOutlined, LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 export default function Login() {
   const [loading, setLoading] = useState(false)
@@ -16,15 +17,10 @@ export default function Login() {
         message.success('登录成功，欢迎回来！')
         localStorage.setItem('mini_waf_token', res.data.token)
         window.location.href = '/'
-      } else {
-        message.error(res.data.message || '登录失败')
       }
-    } catch (err: any) {
-      if (err.response?.status === 401) {
-        message.error('用户名或密码错误')
-      } else {
-        message.error('由于网络或服务器错误，登录请求失败')
-      }
+      // status=error 由拦截器弹 toast
+    } catch {
+      // 拦截器已处理（401/网络错误等）
     } finally {
       setLoading(false)
     }

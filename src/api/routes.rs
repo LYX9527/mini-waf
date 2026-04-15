@@ -22,18 +22,12 @@ pub struct EditRouteRequest {
     pub old_path_prefix: String,
     pub path_prefix: String,
     pub upstream: String,
-    pub route_type: String, // "proxy" 或 "static"
-    #[serde(default)]
-    pub is_spa: bool,
 }
 
 #[derive(Deserialize)]
 pub struct AddRouteRequest {
     pub path_prefix: String,
     pub upstream: String,
-    pub route_type: String, // "proxy" 或 "static"
-    #[serde(default)]
-    pub is_spa: bool,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +126,7 @@ pub async fn delete_rule(
 }
 /// GET /routes: 列出所有路由
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let records = sqlx::query!("SELECT path_prefix, upstream, route_type, is_spa, status FROM routes ORDER BY LENGTH(path_prefix) DESC")
+    let records = sqlx::query!("SELECT path_prefix, upstream, route_type, status FROM routes ORDER BY LENGTH(path_prefix) DESC")
         .fetch_all(&state.db_pool)
         .await
         .unwrap_or_default();
@@ -144,7 +138,6 @@ pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::
                 "path_prefix": r.path_prefix,
                 "upstream": r.upstream,
                 "route_type": r.route_type,
-                "is_spa": r.is_spa != 0,
                 "is_active": r.status == 1,
             })
         })
@@ -152,32 +145,15 @@ pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<serde_json::
     Json(serde_json::json!({ "routes": route_list }))
 }
 
-/// POST /routes: 添加一条新路由（支持 proxy 和 static 两种类型）
+/// POST /routes: 添加一条新路由
 pub async fn add_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddRouteRequest>,
 ) -> Json<serde_json::Value> {
-    let is_static = payload.route_type == "static";
-    let rt = if is_static {
-        "static"
-    } else {
-        "proxy"
-    };
-
-    // 静态路由：校验目录是否存在
-    if is_static && !std::path::Path::new(&payload.upstream).is_dir() {
-        return Json(serde_json::json!({
-            "status": "error",
-            "message": format!("静态资源目录不存在: {}", payload.upstream)
-        }));
-    }
-
     let insert_result = sqlx::query!(
-        "INSERT INTO routes (path_prefix, upstream, route_type, is_spa, status) VALUES (?, ?, ?, ?, 1)",
+        "INSERT INTO routes (path_prefix, upstream, route_type, is_spa, status) VALUES (?, ?, 'proxy', 0, 1)",
         payload.path_prefix,
         payload.upstream,
-        rt,
-        payload.is_spa
     )
     .execute(&state.db_pool)
     .await;
@@ -187,12 +163,7 @@ pub async fn add_route(
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
                 upstream: payload.upstream,
-                route_type: if is_static {
-                    RouteType::Static
-                } else {
-                    RouteType::Proxy
-                },
-                is_spa: payload.is_spa,
+                route_type: RouteType::Proxy,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
@@ -200,7 +171,7 @@ pub async fn add_route(
             routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
             Json(serde_json::json!({
                 "status": "success",
-                "message": format!("路由 '{}' 已添加（类型: {}）", payload.path_prefix, rt)
+                "message": format!("路由 '{}' 已添加", payload.path_prefix)
             }))
         }
         Err(e) => Json(serde_json::json!({
@@ -284,14 +255,13 @@ pub async fn enable_route(
 
     match result {
         Ok(_) => {
-            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE path_prefix = ?", payload.path_prefix).fetch_optional(&state.db_pool).await {
+            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, upstream, route_type FROM routes WHERE path_prefix = ?", payload.path_prefix).fetch_optional(&state.db_pool).await {
                 let mut routes = state.routes.write().await;
                 if !routes.iter().any(|rt| rt.path_prefix == payload.path_prefix) {
                     routes.push(Route {
                         path_prefix: r.path_prefix.clone(),
                         upstream: r.upstream,
-                        route_type: if r.route_type == "static" { RouteType::Static } else { RouteType::Proxy },
-                        is_spa: r.is_spa != 0,
+                        route_type: RouteType::Proxy,
                         rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
                     routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
@@ -345,22 +315,10 @@ pub async fn edit_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EditRouteRequest>,
 ) -> Json<serde_json::Value> {
-    let is_static = payload.route_type == "static";
-    let rt = if is_static { "static" } else { "proxy" };
-
-    if is_static && !std::path::Path::new(&payload.upstream).is_dir() {
-        return Json(serde_json::json!({
-            "status": "error",
-            "message": format!("静态资源目录不存在: {}", payload.upstream)
-        }));
-    }
-
     let update_result = sqlx::query!(
-        "UPDATE routes SET path_prefix = ?, upstream = ?, route_type = ?, is_spa = ? WHERE path_prefix = ?",
+        "UPDATE routes SET path_prefix = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ?",
         payload.path_prefix,
         payload.upstream,
-        rt,
-        payload.is_spa,
         payload.old_path_prefix
     )
     .execute(&state.db_pool)
@@ -369,16 +327,11 @@ pub async fn edit_route(
     match update_result {
         Ok(result) if result.rows_affected() > 0 => {
             let mut routes = state.routes.write().await;
-            
-            // Remove old route
             routes.retain(|r| r.path_prefix != payload.old_path_prefix);
-            
-            // Insert new route
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
                 upstream: payload.upstream,
-                route_type: if is_static { RouteType::Static } else { RouteType::Proxy },
-                is_spa: payload.is_spa,
+                route_type: RouteType::Proxy,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             routes.push(new_route);

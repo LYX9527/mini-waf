@@ -1,7 +1,8 @@
-import { Table, Tabs, Button, Modal, Form, Input, Tag, Popconfirm, message } from 'antd'
+import { Table, Tabs, Button, Modal, Form, Input, Tag, Popconfirm } from 'antd'
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import { useEffect, useState, useCallback } from 'react'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 interface IpItem {
   ip_address: string
@@ -44,8 +45,8 @@ export default function IPLists() {
       setModalOpen(false)
       form.resetFields()
       fetchData()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '添加失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 
@@ -54,8 +55,8 @@ export default function IPLists() {
       await api.delete(`/ip-lists/${type}/${ip}`)
       message.success('删除成功')
       fetchData()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '删除失败')
+    } catch {
+      // 拦截器已处理
     }
   }
 

@@ -1,14 +1,13 @@
 use super::handler::RequestContext;
 use super::response::*;
-use super::static_file;
-use crate::state::{AppState, Route, RouteType};
+use crate::state::{AppState, Route};
 use http_body_util::{Either, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 
-/// Stage 4+5: 路由匹配 + 按类型分发（反向代理 或 静态文件）
+/// Stage 4+5: 路由匹配 + 反向代理分发
 pub async fn route_and_proxy(
     req: Request<Incoming>,
     ctx: &RequestContext,
@@ -20,7 +19,8 @@ pub async fn route_and_proxy(
         .iter()
         .find(|r| {
             ctx.path.starts_with(&r.path_prefix)
-                && (ctx.path.len() == r.path_prefix.len()
+                && (r.path_prefix == "/"
+                    || ctx.path.len() == r.path_prefix.len()
                     || ctx.path.as_bytes()[r.path_prefix.len()] == b'/')
         })
         .cloned();
@@ -48,16 +48,7 @@ pub async fn route_and_proxy(
         suffix.insert(0, '/');
     }
 
-    match route.route_type {
-        RouteType::Proxy => proxy_to_upstream(req, &route, &suffix, ctx, state).await,
-        RouteType::Static => {
-            println!(
-                "📄 静态文件服务: [前缀:{}] {} -> 目录:{} (SPA: {})",
-                route.path_prefix, ctx.path, route.upstream, route.is_spa
-            );
-            static_file::serve_static(&route.upstream, &suffix, route.is_spa).await
-        }
-    }
+    proxy_to_upstream(req, &route, &suffix, ctx, state).await
 }
 
 async fn proxy_to_upstream(

@@ -1,7 +1,8 @@
-import { Card, Form, InputNumber, Button, message, Spin, Input, Divider, Select } from 'antd'
+import { Card, Form, InputNumber, Button, Spin, Input, Divider, Select } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import api from '../api/client'
+import message from '../utils/messageApi'
 
 interface SettingItem {
   value: string
@@ -71,8 +72,8 @@ export default function SystemSettings() {
       await api.put('/settings', { settings: settingsPayload })
       message.success('设置已更新')
       fetchSettings()
-    } catch (e: any) {
-      message.error(e.response?.data?.message || '保存失败')
+    } catch {
+      // 拦截器已处理
     } finally {
       setSaving(false)
     }

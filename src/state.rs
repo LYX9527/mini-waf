@@ -34,20 +34,18 @@ pub struct WafRule {
     pub compiled_regex: Option<Regex>,
 }
 
-/// 路由类型：反向代理 或 静态文件
+/// 路由类型
 #[derive(Clone, Debug, PartialEq)]
 pub enum RouteType {
     Proxy,
-    Static,
 }
 
 /// 路由条目
 #[derive(Clone, Debug)]
 pub struct Route {
     pub path_prefix: String,
-    pub upstream: String, // proxy: host:port, static: 文件系统目录路径
+    pub upstream: String, // host:port
     pub route_type: RouteType,
-    pub is_spa: bool, // 仅对 static 有意义
     pub rr_counter: Arc<AtomicUsize>,
 }
 

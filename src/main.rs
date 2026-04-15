@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // 3. 加载微服务路由表 (按前缀长度降序，最长前缀匹配优先)
     let route_records = sqlx::query!(
-        "SELECT path_prefix, upstream, route_type, is_spa FROM routes WHERE status = 1"
+        "SELECT path_prefix, upstream, route_type FROM routes WHERE status = 1"
     )
     .fetch_all(&pool)
     .await?;
@@ -54,22 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|r| Route {
             path_prefix: r.path_prefix,
             upstream: r.upstream,
-            route_type: match r.route_type.as_str() {
-                "static" => RouteType::Static,
-                _ => RouteType::Proxy,
-            },
-            is_spa: r.is_spa != 0,
+            route_type: RouteType::Proxy,
             rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .collect();
     initial_routes.sort_by(|a, b| b.path_prefix.len().cmp(&a.path_prefix.len()));
 
-    let proxy_count = initial_routes
-        .iter()
-        .filter(|r| r.route_type == RouteType::Proxy)
-        .count();
-    let static_count = initial_routes.len() - proxy_count;
-    log_success!("ROUTER", "已从数据库加载 {} 个路由 (代理: {}, 静态: {})", initial_routes.len(), proxy_count, static_count);
+    log_success!("ROUTER", "已从数据库加载 {} 个路由", initial_routes.len());
 
     // 4. 加载 IP 黑白名单到内存
     let blacklist_records = sqlx::query!("SELECT ip_address FROM ip_blacklist")

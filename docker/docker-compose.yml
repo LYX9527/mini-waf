@@ -1,12 +1,19 @@
 version: '3.8'
 
+networks:
+  waf-network:
+    name: waf-network
+    driver: bridge
+
 services:
   mini-waf:
     image: ghcr.io/lyx9527/mini-waf:master
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     container_name: mini-waf
     ports:
       - "49888:48080" # WAF 服务端口
-      - "49777:8081"   # 管理控制台端口
+      - "49777:8081"  # 管理控制台端口
     environment:
       - DATABASE_URL=mysql://mini_waf_user:password@mysql:3306/mini_waf
       - JWT_SECRET=super_secret_waf_key_please_change
@@ -14,11 +21,26 @@ services:
       - TZ=Asia/Shanghai
       - MMDB_PATH=./data/GeoLite2-City.mmdb
     volumes:
-      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # 控制 nginx reload
+      - nginx_conf:/etc/nginx/conf.d               # 共享 nginx 配置卷
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
+    networks:
+      - waf-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: mini-waf-nginx
+    expose:
+      - "80"
+    volumes:
+      - nginx_conf:/etc/nginx/conf.d               # WAF 管理的站点配置
+      - ./data:/usr/share/nginx/html:ro             # 默认静态文件目录
+    restart: unless-stopped
+    networks:
+      - waf-network
 
   mysql:
     image: mysql:8.0
@@ -37,6 +59,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - waf-network
 
 volumes:
   mysql_data:
+  nginx_conf:

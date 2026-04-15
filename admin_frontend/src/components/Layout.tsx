@@ -8,6 +8,7 @@ import {
   SecurityScanOutlined,
   UnorderedListOutlined,
   PoweroffOutlined,
+  CloudServerOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useEffect, useState, useRef } from 'react'
@@ -18,6 +19,7 @@ const { Sider, Header, Content } = Layout
 const menuItems = [
   { key: '/overview', icon: <DashboardOutlined />, label: '总览面板' },
   { key: '/sites', icon: <GlobalOutlined />, label: '站点管理' },
+  { key: '/nginx', icon: <CloudServerOutlined />, label: 'Nginx 配置' },
   {
     key: '/logs',
     icon: <FileTextOutlined />,
