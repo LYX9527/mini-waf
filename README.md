@@ -1,17 +1,10 @@
 <div align="center">
 
-```
-███╗   ███╗██╗███╗   ██╗██╗    ██╗ █████╗ ███████╗
-████╗ ████║██║████╗  ██║██║    ██║██╔══██╗██╔════╝
-██╔████╔██║██║██╔██╗ ██║██║ █╗ ██║███████║█████╗  
-██║╚██╔╝██║██║██║╚██╗██║██║███╗██║██╔══██║██╔══╝  
-██║ ╚═╝ ██║██║██║ ╚████║╚███╔███╔╝██║  ██║██║     
-╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝     
-```
+<img src="./install/banner.png" width="840"/>
 
 **轻量级高性能 Web 应用防火墙**
 
-[![Build](https://img.shields.io/github/actions/workflow/status/LYX9527/mini-waf/docker-publish.yml?style=flat-square&logo=github&label=Build)](https://github.com/LYX9527/mini-waf/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/LYX9527/mini-waf/build.yml?style=flat-square&logo=github&label=Build)](https://github.com/LYX9527/mini-waf/actions)
 [![Image](https://img.shields.io/badge/ghcr.io-mini--waf-00f0ff?style=flat-square&logo=docker)](https://ghcr.io/lyx9527/mini-waf)
 [![License](https://img.shields.io/github/license/LYX9527/mini-waf?style=flat-square&color=7000ff)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
