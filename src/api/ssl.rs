@@ -74,7 +74,20 @@ fn days_until_expiry(not_after: &str) -> i64 {
         let now = Utc::now();
         (dt.with_timezone(&Utc) - now).num_days()
     } else {
-        999
+        // 无法解析日期时返回 0（而非 999），避免显示虚假的剩余天数
+        0
+    }
+}
+
+/// 直接从 数据库取出的 NaiveDateTime 计算剩余天数
+fn days_from_naive(dt: Option<chrono::NaiveDateTime>) -> i64 {
+    use chrono::Utc;
+    match dt {
+        Some(naive) => {
+            let utc_dt = chrono::DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc);
+            (utc_dt - Utc::now()).num_days()
+        }
+        None => 0,
     }
 }
 
@@ -98,16 +111,19 @@ pub async fn list_certs(State(state): State<Arc<AppState>>) -> Json<serde_json::
         let auto_renew: bool = row.get::<i8, _>("auto_renew") != 0;
         let acme_method: Option<String> = row.get("acme_method");
 
-        // 尝试从文件重新解析（更准确）
+        // 优先从文件解析（更准确），文件不可读时回退到 DB 数据
         let cert_path_obj = std::path::Path::new(&cert_path);
-        let (live_issuer, live_nb, live_na) = parse_cert_file(cert_path_obj)
-            .unwrap_or_else(|| (
-                issuer.clone().unwrap_or_default(),
-                not_before.map(|d| d.to_string()).unwrap_or_default(),
-                not_after.map(|d| d.to_string()).unwrap_or_default(),
-            ));
+        let (live_issuer, live_na, days) = if let Some((fi, _, fna)) = parse_cert_file(cert_path_obj) {
+            let d = days_until_expiry(&fna);
+            (fi, fna, d)
+        } else {
+            // 文件不可读：直接用 DB 的 NaiveDateTime 计算，不经过 RFC2822 转换
+            let iss = issuer.clone().unwrap_or_else(|| "Let's Encrypt".to_string());
+            let na_str = not_after.map(|d| d.to_string()).unwrap_or_default();
+            let d = days_from_naive(not_after);
+            (iss, na_str, d)
+        };
 
-        let days = days_until_expiry(&live_na);
         let status = if days < 0 {
             "expired"
         } else if days <= 15 {
@@ -119,7 +135,7 @@ pub async fn list_certs(State(state): State<Arc<AppState>>) -> Json<serde_json::
         certs.push(serde_json::json!({
             "domain": domain,
             "issuer": live_issuer,
-            "not_before": live_nb,
+            "not_before": not_before.map(|d| d.to_string()).unwrap_or_default(),
             "not_after": live_na,
             "days_remaining": days,
             "status": status,
@@ -733,13 +749,14 @@ pub async fn request_cert(
         "--agree-tos".into(),
         "--email".into(), email.clone(),
         "--domain".into(), certbot_domain.clone(),
+        // 主动申请时强制重新签发，避免 certbot 因证书尚未到期而拒绝执行
+        "--force-renewal".into(),
     ];
 
     match provider.as_str() {
         "http01" => {
             // Let's Encrypt HTTP-01 challenge：需要 nginx 能响应 /.well-known/acme-challenge/
-            cmd_args.push("--authenticator".into());
-            cmd_args.push("webroot".into());
+            cmd_args.push("--webroot".into());
             cmd_args.push("--webroot-path".into());
             cmd_args.push("/var/www/certbot".into());
         }
@@ -779,12 +796,13 @@ pub async fn request_cert(
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(&ini_host_path, std::fs::Permissions::from_mode(0o600));
             }
-            cmd_args.push("--authenticator".into());
-            cmd_args.push("dns-cloudflare".into());
+            // 使用插件简写标志 --dns-cloudflare（等同于 --authenticator=dns-cloudflare，
+            // 但 certbot-dns-cloudflare 5.x 推荐使用简写形式）
+            cmd_args.push("--dns-cloudflare".into());
             cmd_args.push("--dns-cloudflare-credentials".into());
             cmd_args.push(ini_certbot_path);          // certbot 容器内路径
             cmd_args.push("--dns-cloudflare-propagation-seconds".into());
-            cmd_args.push("20".into());
+            cmd_args.push("60".into());               // 60s 保证 DNS 传播完成
         }
 
         "dns_dnspod" => {
@@ -796,8 +814,7 @@ pub async fn request_cert(
             let ini_host_path    = format!("{}/dnspod_{}.ini", CERTS_TMP_HOST,    domain_arg);
             let ini_certbot_path = format!("{}/dnspod_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
             let _ = std::fs::write(&ini_host_path, ini);
-            cmd_args.push("--authenticator".into());
-            cmd_args.push("dns-dnspod".into());
+            cmd_args.push("--dns-dnspod".into());
             cmd_args.push("--dns-dnspod-credentials".into());
             cmd_args.push(ini_certbot_path);
         }
@@ -810,8 +827,7 @@ pub async fn request_cert(
             let ini_host_path    = format!("{}/aliyun_{}.ini", CERTS_TMP_HOST,    domain_arg);
             let ini_certbot_path = format!("{}/aliyun_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
             let _ = std::fs::write(&ini_host_path, ini);
-            cmd_args.push("--authenticator".into());
-            cmd_args.push("dns-aliyun".into());
+            cmd_args.push("--dns-aliyun".into());
             cmd_args.push("--dns-aliyun-credentials".into());
             cmd_args.push(ini_certbot_path);
         }
