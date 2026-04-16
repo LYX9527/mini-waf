@@ -16,6 +16,13 @@ use crate::state::AppState;
 const CERTS_ROOT: &str = "/certs";
 // nginx 容器内挂载路径（用于生成 nginx 配置）
 const NGINX_CERTS_ROOT: &str = "/etc/nginx/certs";
+// certbot 容器内，同一个 nginx_certs 卷挂载于 /etc/letsencrypt
+// WAF  -> /certs/<path>  ==  certbot -> /etc/letsencrypt/<path>
+const CERTBOT_CERTS_ROOT: &str = "/etc/letsencrypt";
+// 凭证 ini 文件在 WAF 容器内的写入目录
+const CERTS_TMP_HOST: &str = "/certs/tmp";
+// 同一写入目录在 certbot 容器内的读取路径
+const CERTS_TMP_CERTBOT: &str = "/etc/letsencrypt/tmp";
 
 // ─── 域名安全校验 ──────────────────────────────────────────────────────────────
 fn validate_domain(domain: &str) -> bool {
@@ -706,14 +713,16 @@ pub async fn request_cert(
     };
 
     // 根据 provider 构建 certbot 命令
+    // 注意：路径使用 certbot 容器视角 (nginx_certs 挂载于 /etc/letsencrypt)
+    let certbot_cert_dir = format!("{}/{}", CERTBOT_CERTS_ROOT, domain_arg);
     let mut cmd_args: Vec<String> = vec![
         "certbot".into(), "certonly".into(),
         "--non-interactive".into(),
         "--agree-tos".into(),
         "--email".into(), email.clone(),
         "--domain".into(), certbot_domain.clone(),
-        "--cert-path".into(), format!("{}/fullchain.pem", dir.display()),
-        "--key-path".into(),  format!("{}/privkey.pem",  dir.display()),
+        "--cert-path".into(), format!("{}/fullchain.pem", certbot_cert_dir),
+        "--key-path".into(),  format!("{}/privkey.pem",  certbot_cert_dir),
     ];
 
     match provider.as_str() {
@@ -725,10 +734,6 @@ pub async fn request_cert(
             cmd_args.push("/var/www/certbot".into());
         }
         "dns_cloudflare" => {
-            // 使用最小权限双 Token：
-            //   CF_DNS_API_TOKEN  → Zone:DNS:Edit（只需 DNS 写权限）
-            //   CF_ZONE_API_TOKEN → Zone:Zone:Read（只需 Zone 读权限）
-            // certbot-dns-cloudflare ≥ 1.7 支持两个独立 Token
             let creds = parse_credentials(&credentials_json);
             let dns_token  = creds.get("CF_DNS_API_TOKEN").cloned().unwrap_or_default();
             let zone_token = creds.get("CF_ZONE_API_TOKEN").cloned().unwrap_or_else(|| dns_token.clone());
@@ -736,26 +741,27 @@ pub async fn request_cert(
             if dns_token.is_empty() {
                 return Json(serde_json::json!({
                     "status": "error",
-                    "message": "请先在 ACME 配置中填写 CF_DNS_API_TOKEN"
+                    "message": "请先在 DNS 凭证中填写 CF_DNS_API_TOKEN"
                 }));
             }
 
-            // 生成 certbot-dns-cloudflare 凭证 ini 文件（600 权限）
+            // 凭证 ini 写到共享卷 (WAF 容器路径)，certbot 从对应路径读取
+            let _ = std::fs::create_dir_all(CERTS_TMP_HOST);
             let ini = format!(
                 "# certbot-dns-cloudflare credentials\ndns_cloudflare_dns_api_token  = {}\ndns_cloudflare_zone_api_token = {}\n",
                 dns_token, zone_token
             );
-            let ini_path = format!("/tmp/cf_{}.ini", domain_arg);
-            let _ = std::fs::write(&ini_path, &ini);
+            let ini_host_path    = format!("{}/cf_{}.ini", CERTS_TMP_HOST,    domain_arg);
+            let ini_certbot_path = format!("{}/cf_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
+            let _ = std::fs::write(&ini_host_path, &ini);
             #[cfg(unix)] {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&ini_path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(&ini_host_path, std::fs::Permissions::from_mode(0o600));
             }
             cmd_args.push("--authenticator".into());
             cmd_args.push("dns-cloudflare".into());
             cmd_args.push("--dns-cloudflare-credentials".into());
-            cmd_args.push(ini_path);
-            // DNS 记录传播等待时间（默认 10s，按需增大）
+            cmd_args.push(ini_certbot_path);          // certbot 容器内路径
             cmd_args.push("--dns-cloudflare-propagation-seconds".into());
             cmd_args.push("20".into());
         }
@@ -764,25 +770,29 @@ pub async fn request_cert(
             let creds = parse_credentials(&credentials_json);
             let id  = creds.get("DP_Id").cloned().unwrap_or_default();
             let key = creds.get("DP_Key").cloned().unwrap_or_default();
+            let _ = std::fs::create_dir_all(CERTS_TMP_HOST);
             let ini = format!("dns_dnspod_id = {}\ndns_dnspod_key = {}\n", id, key);
-            let ini_path = format!("/tmp/dnspod_{}.ini", domain_arg);
-            let _ = std::fs::write(&ini_path, ini);
+            let ini_host_path    = format!("{}/dnspod_{}.ini", CERTS_TMP_HOST,    domain_arg);
+            let ini_certbot_path = format!("{}/dnspod_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
+            let _ = std::fs::write(&ini_host_path, ini);
             cmd_args.push("--authenticator".into());
             cmd_args.push("dns-dnspod".into());
             cmd_args.push("--dns-dnspod-credentials".into());
-            cmd_args.push(ini_path);
+            cmd_args.push(ini_certbot_path);
         }
         "dns_aliyun" => {
             let creds = parse_credentials(&credentials_json);
             let key    = creds.get("Ali_Key").cloned().unwrap_or_default();
             let secret = creds.get("Ali_Secret").cloned().unwrap_or_default();
+            let _ = std::fs::create_dir_all(CERTS_TMP_HOST);
             let ini = format!("dns_aliyun_key = {}\ndns_aliyun_secret = {}\n", key, secret);
-            let ini_path = format!("/tmp/aliyun_{}.ini", domain_arg);
-            let _ = std::fs::write(&ini_path, ini);
+            let ini_host_path    = format!("{}/aliyun_{}.ini", CERTS_TMP_HOST,    domain_arg);
+            let ini_certbot_path = format!("{}/aliyun_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
+            let _ = std::fs::write(&ini_host_path, ini);
             cmd_args.push("--authenticator".into());
             cmd_args.push("dns-aliyun".into());
             cmd_args.push("--dns-aliyun-credentials".into());
-            cmd_args.push(ini_path);
+            cmd_args.push(ini_certbot_path);
         }
         _ => {
             return Json(serde_json::json!({ "status": "error", "message": "不支持的验证方式" }));

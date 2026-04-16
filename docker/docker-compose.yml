@@ -46,13 +46,16 @@ services:
     networks:
       - waf-network
 
-  # ACME / Certbot 服务（用于自动申请和续签 Let's Encrypt 证书）
+  # ACME / Certbot 服务（预装 DNS 插件：cloudflare / dnspod / aliyun）
   certbot:
-    image: certbot/certbot:latest
+    image: ghcr.io/lyx9527/mini-waf-certbot:master
+    build:
+      context: ./certbot
+      dockerfile: Dockerfile
     container_name: mini-waf-certbot
-    entrypoint: /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew --webroot --webroot-path=/var/www/certbot --quiet; done"
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait $${!}; certbot renew --quiet; done"
     volumes:
-      - nginx_certs:/etc/letsencrypt                # certbot 默认证书输出目录（统一挂载）
+      - nginx_certs:/etc/letsencrypt                # certbot 默认证书输出 + 凭证 ini 读取
       - certbot_webroot:/var/www/certbot            # HTTP-01 challenge 文件目录
     restart: unless-stopped
     networks:
