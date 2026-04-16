@@ -747,10 +747,21 @@ pub async fn request_cert(
 
             // 凭证 ini 写到共享卷 (WAF 容器路径)，certbot 从对应路径读取
             let _ = std::fs::create_dir_all(CERTS_TMP_HOST);
-            let ini = format!(
-                "# certbot-dns-cloudflare credentials\ndns_cloudflare_dns_api_token  = {}\ndns_cloudflare_zone_api_token = {}\n",
-                dns_token, zone_token
-            );
+            // certbot-dns-cloudflare 双 Token 最小权限格式：
+            //   dns_cloudflare_api_token      = <Token with Zone:DNS:Edit>
+            //   dns_cloudflare_zone_api_token = <Token with Zone:Zone:Read>
+            // 两个 key 名称都不带 "_dns_"，参考官方文档：
+            // https://certbot-dns-cloudflare.readthedocs.io/
+            let ini = if zone_token.is_empty() || zone_token == dns_token {
+                // 只有一个 Token 时，要求该 Token 同时具备 DNS:Edit + Zone:Read
+                format!("dns_cloudflare_api_token = {}\n", dns_token)
+            } else {
+                // 分离双 Token 最小权限模式
+                format!(
+                    "dns_cloudflare_api_token = {}\ndns_cloudflare_zone_api_token = {}\n",
+                    dns_token, zone_token
+                )
+            };
             let ini_host_path    = format!("{}/cf_{}.ini", CERTS_TMP_HOST,    domain_arg);
             let ini_certbot_path = format!("{}/cf_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
             let _ = std::fs::write(&ini_host_path, &ini);
