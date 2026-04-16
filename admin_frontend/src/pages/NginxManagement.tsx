@@ -6,6 +6,7 @@ import message from '../utils/messageApi'
 
 interface NginxConfig {
   listen_port: number
+  site_name: string | null
   server_name: string | null
   root_path: string
   filename: string
@@ -201,7 +202,7 @@ function SiteConfigsTab() {
   const [configs, setConfigs] = useState<NginxConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [editingPort, setEditingPort] = useState<number | null>(null)
+  const [editingFilename, setEditingFilename] = useState<string | null>(null)
   const [advancedMode, setAdvancedMode] = useState(false)
   const [rawContent, setRawContent] = useState('')
   const [form] = Form.useForm()
@@ -220,7 +221,7 @@ function SiteConfigsTab() {
   useEffect(() => { fetchConfigs() }, [])
 
   const openCreateModal = () => {
-    setEditingPort(null)
+    setEditingFilename(null)
     setAdvancedMode(false)
     setRawContent('')
     form.resetFields()
@@ -230,11 +231,12 @@ function SiteConfigsTab() {
   const openEditModal = (record: NginxConfig) => {
     form.setFieldsValue({
       listen_port: record.listen_port,
+      site_name: record.site_name,
       server_name: record.server_name,
       root_path: record.root_path,
     })
     setRawContent(record.raw_content || '')
-    setEditingPort(record.listen_port)
+    setEditingFilename(record.filename)
     setAdvancedMode(false)
     setModalOpen(true)
   }
@@ -247,23 +249,23 @@ function SiteConfigsTab() {
           message.error('请填写监听端口')
           return
         }
-        if (editingPort !== null) {
-          await api.put('/nginx/configs', { old_listen_port: editingPort, listen_port: port, raw_content: rawContent })
+        if (editingFilename !== null) {
+          await api.put('/nginx/configs', { old_filename: editingFilename, listen_port: port, raw_content: rawContent })
         } else {
           await api.post('/nginx/configs', { listen_port: port, raw_content: rawContent })
         }
       } else {
         const values = await form.validateFields()
-        if (editingPort !== null) {
-          await api.put('/nginx/configs', { ...values, old_listen_port: editingPort })
+        if (editingFilename !== null) {
+          await api.put('/nginx/configs', { ...values, old_filename: editingFilename })
         } else {
           await api.post('/nginx/configs', values)
         }
       }
       // 成功走到这里说明拦截器没有 reject（status !== 'error'）
-      message.success(editingPort !== null ? '配置已更新' : '配置已创建')
+      message.success(editingFilename !== null ? '配置已更新' : '配置已创建')
       setModalOpen(false)
-      setEditingPort(null)
+      setEditingFilename(null)
       form.resetFields()
       fetchConfigs()
     } catch {
@@ -271,9 +273,9 @@ function SiteConfigsTab() {
     }
   }
 
-  const handleDelete = async (port: number) => {
+  const handleDelete = async (filename: string) => {
     try {
-      await api.delete('/nginx/configs', { data: { listen_port: port } })
+      await api.delete('/nginx/configs', { data: { filename } })
       message.success('配置已删除')
       fetchConfigs()
     } catch {
@@ -285,15 +287,16 @@ function SiteConfigsTab() {
     if (checked && !rawContent.trim()) {
       const port = form.getFieldValue('listen_port') || 80
       const sn = form.getFieldValue('server_name') || '_'
-      const root = form.getFieldValue('root_path') || '/usr/share/nginx/html'
       setRawContent(`server {
     listen ${port};
     server_name ${sn};
-    root ${root};
-    index index.html index.htm;
 
     location / {
-        try_files $uri $uri/ /index.html;
+        proxy_pass         http://mini-waf:48080;
+        proxy_set_header   Host               $host;
+        proxy_set_header   X-Real-IP          $remote_addr;
+        proxy_set_header   X-Forwarded-For    $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto  $scheme;
     }
 }
 `)
@@ -310,17 +313,16 @@ function SiteConfigsTab() {
       render: (port: number) => <Tag color="cyan">{port}</Tag>,
     },
     {
+      title: '站点名称',
+      dataIndex: 'filename',
+      key: 'filename',
+      render: (name: string) => <code style={{ color: '#8b949e', fontSize: 12 }}>{name}</code>,
+    },
+    {
       title: '域名',
       dataIndex: 'server_name',
       key: 'server_name',
       render: (name: string | null) => name || <span style={{ color: '#8b949e' }}>_</span>,
-    },
-    {
-      title: '根目录',
-      dataIndex: 'root_path',
-      key: 'root_path',
-      ellipsis: true,
-      render: (p: string) => <code style={{ color: '#8b949e', fontSize: 12 }}>{p}</code>,
     },
     {
       title: '路由引用',
@@ -337,7 +339,7 @@ function SiteConfigsTab() {
       render: (_: any, record: NginxConfig) => (
         <div style={{ display: 'flex', gap: 8 }}>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>编辑</Button>
-          <Popconfirm title="确定删除此站点配置？" onConfirm={() => handleDelete(record.listen_port)}>
+          <Popconfirm title="确定删除此站点配置？" onConfirm={() => handleDelete(record.filename)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </div>
@@ -370,7 +372,7 @@ function SiteConfigsTab() {
       <Modal
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 24 }}>
-            <span>{editingPort !== null ? '编辑站点配置' : '新增站点配置'}</span>
+            <span>{editingFilename !== null ? '编辑站点配置' : '新增站点配置'}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 400 }}>
               <span style={{ color: '#8b949e' }}>高级模式</span>
               <Switch size="small" checked={advancedMode} onChange={handleModeSwitch} />
@@ -379,24 +381,40 @@ function SiteConfigsTab() {
         }
         open={modalOpen}
         onOk={handleSubmit}
-        onCancel={() => { setModalOpen(false); setEditingPort(null); form.resetFields(); setAdvancedMode(false); setRawContent('') }}
+        onCancel={() => { setModalOpen(false); setEditingFilename(null); form.resetFields(); setAdvancedMode(false); setRawContent('') }}
         okText="保存并生效"
         cancelText="取消"
         width={advancedMode ? 750 : 520}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" initialValues={{ listen_port: 8090, root_path: '/usr/share/nginx/html' }}>
+        <Form form={form} layout="vertical" initialValues={{ listen_port: 8090 }}>
           <Form.Item name="listen_port" label="监听端口" rules={[{ required: true, message: '请输入端口号' }]}>
-            <InputNumber min={1} max={65535} style={{ width: '100%' }} disabled={editingPort !== null} />
+            <InputNumber min={1} max={65535} style={{ width: '100%' }} />
           </Form.Item>
 
           {!advancedMode ? (
             <>
+              <Form.Item
+                name="site_name"
+                label="站点名称"
+                extra="用于配置文件命名，留空时自动使用域名或端口号">
+                <Input placeholder="例如: my-site（留空则自动推导）" />
+              </Form.Item>
               <Form.Item name="server_name" label="域名 (可选)">
                 <Input placeholder="example.com（留空则为通配）" />
               </Form.Item>
-              <Form.Item name="root_path" label="静态文件根目录" rules={[{ required: true, message: '请输入根目录路径' }]}>
-                <Input placeholder="/usr/share/nginx/html" />
+              <Form.Item
+                name="root_path"
+                label={
+                  <span>
+                    静态文件根目录
+                    <span style={{ color: '#8b949e', fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
+                      （可选，留空则使用 WAF 反向代理模式）
+                    </span>
+                  </span>
+                }
+              >
+                <Input placeholder="/usr/share/nginx/html（留空则为 WAF 代理模式）" />
               </Form.Item>
             </>
           ) : (

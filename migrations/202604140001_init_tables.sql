@@ -133,4 +133,5 @@ INSERT IGNORE INTO system_settings (setting_key, setting_value, description) VAL
 ('penalty_ttl_secs', '3600', '惩罚分过期秒数'),
 ('token_ttl_secs', '3600', '通行令牌有效期秒数'),
 ('custom_block_page', '', '自定义拦截页面 HTML（留空表示使用原生）'),
+('geo_blocked_countries', '', '被封禁的国家 ISO 代码'),
 ('captcha_ttl_secs', '300', '验证码有效期秒数');

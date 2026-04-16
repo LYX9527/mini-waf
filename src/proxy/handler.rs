@@ -26,17 +26,28 @@ pub struct RequestContext {
 impl RequestContext {
     pub fn new(req: &Request<Incoming>, remote_addr: SocketAddr) -> Self {
         // ── 真实客户端 IP 提取链 ────────────────────────────────────────────
-        // 优先级：X-Real-IP > X-Forwarded-For(第一个) > TCP remote_addr
-        // 这样在 Nginx → WAF 架构下能正确拿到公网 IP 而不是 Nginx 容器的内网 IP
+        // 优先级：CF-Connecting-IP > X-Real-IP > X-Forwarded-For(第一个) > TCP remote_addr
+        // CF-Connecting-IP: Cloudflare 注入的真实客户端 IP，Nginx 通过 proxy_set_header 透传
+        //   Cloudflare 会强制替换该头（用户无法伪造），是最可信的来源
+        // X-Real-IP: 由 Nginx real_ip_module 还原后通过 proxy_set_header 注入
+        // X-Forwarded-For: 取最左一个（原始客户端），但可能被伪造
         let real_ip_str: Option<String> = {
-            // 1. X-Real-IP（最准确，由上游 nginx proxy_set_header X-Real-IP $remote_addr 注入）
+            // 1. CF-Connecting-IP（Cloudflare 架构下最可信）
             req.headers()
-                .get("x-real-ip")
+                .get("cf-connecting-ip")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .or_else(|| {
-                    // 2. X-Forwarded-For：取第一个（最左/最原始）IP
+                    // 2. X-Real-IP（Nginx real_ip_module 还原后透传）
+                    req.headers()
+                        .get("x-real-ip")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| {
+                    // 3. X-Forwarded-For：取第一个（最左/最原始）IP
                     req.headers()
                         .get("x-forwarded-for")
                         .and_then(|v| v.to_str().ok())

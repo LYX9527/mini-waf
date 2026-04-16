@@ -11,6 +11,7 @@ const NGINX_MAIN_CONF_STAGING: &str = "/etc/nginx/conf.d/.nginx_main.conf";
 #[derive(Deserialize)]
 pub struct NginxConfigRequest {
     pub listen_port: u16,
+    pub site_name: Option<String>,   // 用于文件命名，优先使用此字段
     pub server_name: Option<String>,
     pub root_path: Option<String>,
     #[serde(default)]
@@ -19,8 +20,9 @@ pub struct NginxConfigRequest {
 
 #[derive(Deserialize)]
 pub struct EditNginxConfigRequest {
-    pub old_listen_port: u16,
+    pub old_filename: String,        // 原始文件名（不含路径），用于定位旧文件
     pub listen_port: u16,
+    pub site_name: Option<String>,   // 新的站点名
     pub server_name: Option<String>,
     pub root_path: Option<String>,
     #[serde(default)]
@@ -29,7 +31,7 @@ pub struct EditNginxConfigRequest {
 
 #[derive(Deserialize)]
 pub struct DeleteNginxConfigRequest {
-    pub listen_port: u16,
+    pub filename: String,            // 文件名（不含路径），用于删除
 }
 
 #[derive(Deserialize)]
@@ -66,9 +68,13 @@ server {{
     location / {{
         proxy_pass         http://mini-waf:48080;
         proxy_set_header   Host               $host;
-        proxy_set_header   X-Real-IP          $remote_addr;
+        # 真实 IP 透传：优先用 $realip_remote_addr（已经由 real_ip_module 还原的真实 IP）
+        # 如果前端是 Cloudflare，需在主配置里配置 set_real_ip_from 指向 Cloudflare IP 段
+        proxy_set_header   X-Real-IP          $realip_remote_addr;
         proxy_set_header   X-Forwarded-For    $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto  $scheme;
+        # 透传 Cloudflare 真实客户端 IP头，WAF 会优先读取此头
+        proxy_set_header   CF-Connecting-IP   $http_cf_connecting_ip;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade            $http_upgrade;
         proxy_set_header   Connection         "upgrade";
@@ -95,8 +101,21 @@ server {{
     }
 }
 
-fn conf_filename(port: u16) -> String {
-    format!("waf_site_{}.conf", port)
+/// 根据站点名或 server_name 生成文件名，将非字母数字字符替换为下划线
+/// 优先级: site_name > server_name > port
+fn conf_filename_from(site_name: Option<&str>, server_name: Option<&str>, port: u16) -> String {
+    let raw = site_name
+        .filter(|s| !s.is_empty())
+        .or_else(|| server_name.filter(|s| !s.is_empty() && *s != "_"))
+        .unwrap_or("");
+    if raw.is_empty() {
+        return format!("waf_site_{}.conf", port);
+    }
+    // 将点、连字符、通配符等替换为下划线，保持文件名安全
+    let safe: String = raw.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }
+    }).collect();
+    format!("waf_site_{}.conf", safe)
 }
 
 /// 通过 Docker Socket 在 nginx 容器内执行命令
@@ -261,7 +280,7 @@ pub async fn list_nginx_configs() -> Json<serde_json::Value> {
     if let Ok(entries) = std::fs::read_dir(conf_dir) {
         for entry in entries.flatten() {
             let filename = entry.file_name().to_string_lossy().to_string();
-            if filename.starts_with("waf_site_") && filename.ends_with(".conf") {
+            if filename.starts_with("waf_site_") && filename.ends_with(".conf") && filename != ".nginx_main.conf" {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     // 从 server block 中解析监听端口，兼容多种格式：
                     // "listen 80;"  "listen  8090;"（多空格）  "listen 443 ssl;"
@@ -322,6 +341,15 @@ pub async fn list_nginx_configs() -> Json<serde_json::Value> {
 pub async fn add_nginx_config(
     Json(payload): Json<NginxConfigRequest>,
 ) -> Json<serde_json::Value> {
+    // 注入防护: 校验 site_name
+    if let Some(sn) = &payload.site_name {
+        if !sn.is_empty() && !validate_server_name(sn) {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "站点名称包含非法字符，只允许字母、数字、点、连字符、下划线"
+            }));
+        }
+    }
     // 注入防护: 校验 server_name 和 root_path
     if let Some(sn) = &payload.server_name {
         if !sn.is_empty() && !validate_server_name(sn) {
@@ -340,12 +368,17 @@ pub async fn add_nginx_config(
         }
     }
 
-    let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(conf_filename(payload.listen_port));
+    let filename = conf_filename_from(
+        payload.site_name.as_deref(),
+        payload.server_name.as_deref(),
+        payload.listen_port,
+    );
+    let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(&filename);
 
     if conf_path.exists() {
         return Json(serde_json::json!({
             "status": "error",
-            "message": format!("端口 {} 的配置已存在", payload.listen_port)
+            "message": format!("站点配置 {} 已存在", filename)
         }));
     }
 
@@ -355,7 +388,7 @@ pub async fn add_nginx_config(
         generate_server_block(
             payload.listen_port,
             payload.server_name.as_deref(),
-            payload.root_path.as_deref().unwrap_or("/usr/share/nginx/html"),
+            payload.root_path.as_deref().unwrap_or(""),
         )
     };
 
@@ -377,15 +410,38 @@ pub async fn add_nginx_config(
         Err(e) => return Json(serde_json::json!({ "status": "warning", "message": format!("配置已保存，但 reload 失败: {}", e) })),
     };
 
-    Json(serde_json::json!({ "status": "success", "message": format!("端口 {} 配置已创建。{}", payload.listen_port, reload_msg) }))
+    Json(serde_json::json!({ "status": "success", "message": format!("站点 {} 配置已创建。{}", filename, reload_msg) }))
 }
 
 /// PUT /api/v1/nginx/configs — 编辑
 pub async fn edit_nginx_config(
     Json(payload): Json<EditNginxConfigRequest>,
 ) -> Json<serde_json::Value> {
-    let old_path = std::path::Path::new(NGINX_CONF_DIR).join(conf_filename(payload.old_listen_port));
-    let new_path = std::path::Path::new(NGINX_CONF_DIR).join(conf_filename(payload.listen_port));
+    // 校验
+    if let Some(sn) = &payload.site_name {
+        if !sn.is_empty() && !validate_server_name(sn) {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "站点名称包含非法字符，只允许字母、数字、点、连字符、下划线"
+            }));
+        }
+    }
+    if let Some(root) = &payload.root_path {
+        if !root.is_empty() && !validate_path(root) {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "root_path 必须是以 / 开头的合法路径"
+            }));
+        }
+    }
+
+    let old_path = std::path::Path::new(NGINX_CONF_DIR).join(&payload.old_filename);
+    let new_filename = conf_filename_from(
+        payload.site_name.as_deref(),
+        payload.server_name.as_deref(),
+        payload.listen_port,
+    );
+    let new_path = std::path::Path::new(NGINX_CONF_DIR).join(&new_filename);
 
     // 备份旧内容，用于测试失败时回滚
     let old_content = std::fs::read_to_string(&old_path).ok();
@@ -399,7 +455,7 @@ pub async fn edit_nginx_config(
         generate_server_block(
             payload.listen_port,
             payload.server_name.as_deref(),
-            payload.root_path.as_deref().unwrap_or("/usr/share/nginx/html"),
+            payload.root_path.as_deref().unwrap_or(""),
         )
     };
 
@@ -428,16 +484,20 @@ pub async fn edit_nginx_config(
         Err(e) => return Json(serde_json::json!({ "status": "warning", "message": format!("已保存，reload 失败: {}", e) })),
     };
 
-    Json(serde_json::json!({ "status": "success", "message": format!("端口 {} 配置已更新。{}", payload.listen_port, reload_msg) }))
+    Json(serde_json::json!({ "status": "success", "message": format!("站点 {} 配置已更新。{}", new_filename, reload_msg) }))
 }
 
 /// DELETE /api/v1/nginx/configs — 删除
 pub async fn delete_nginx_config(
     Json(payload): Json<DeleteNginxConfigRequest>,
 ) -> Json<serde_json::Value> {
-    let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(conf_filename(payload.listen_port));
+    // 安全校验：文件名必须在 conf.d 目录下，且符合 waf_site_ 前缀
+    if !payload.filename.starts_with("waf_site_") || !payload.filename.ends_with(".conf") || payload.filename.contains('/') || payload.filename.contains("..") {
+        return Json(serde_json::json!({ "status": "error", "message": "非法文件名" }));
+    }
+    let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(&payload.filename);
     if !conf_path.exists() {
-        return Json(serde_json::json!({ "status": "error", "message": format!("端口 {} 配置不存在", payload.listen_port) }));
+        return Json(serde_json::json!({ "status": "error", "message": format!("配置文件 {} 不存在", payload.filename) }));
     }
     if let Err(e) = std::fs::remove_file(&conf_path) {
         return Json(serde_json::json!({ "status": "error", "message": format!("删除失败: {}", e) }));
@@ -448,7 +508,7 @@ pub async fn delete_nginx_config(
         Err(e) => return Json(serde_json::json!({ "status": "warning", "message": format!("已删除，reload 失败: {}", e) })),
     };
 
-    Json(serde_json::json!({ "status": "success", "message": format!("端口 {} 配置已删除。{}", payload.listen_port, reload_msg) }))
+    Json(serde_json::json!({ "status": "success", "message": format!("站点配置 {} 已删除。{}", payload.filename, reload_msg) }))
 }
 
 // ─── API: 主配置文件 ──────────────────────────────────
@@ -478,10 +538,36 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
-    # ── 真实 IP 透传（当 Nginx 前面还有 CDN/SLB 时启用）──────────────
-    # real_ip_header     X-Forwarded-For;
-    # real_ip_recursive  on;
-    # set_real_ip_from   0.0.0.0/0;   # 根据实际可信上游 CIDR 范围填写
+    # ── 真实 IP 还原（当前端是 Cloudflare CDN 时必须启用）──────────────────
+    # 配置后，$realip_remote_addr 将是真实客户端 IP，$remote_addr 是 Cloudflare 节点 IP
+    # WAF 站点配置模板应使用 proxy_set_header X-Real-IP $realip_remote_addr;
+    real_ip_header     CF-Connecting-IP;
+    real_ip_recursive  off;
+    # Cloudflare IPv4 节点段（定期更新: https://www.cloudflare.com/ips-v4/）
+    set_real_ip_from   103.21.244.0/22;
+    set_real_ip_from   103.22.200.0/22;
+    set_real_ip_from   103.31.4.0/22;
+    set_real_ip_from   104.16.0.0/13;
+    set_real_ip_from   104.24.0.0/14;
+    set_real_ip_from   108.162.192.0/18;
+    set_real_ip_from   131.0.72.0/22;
+    set_real_ip_from   141.101.64.0/18;
+    set_real_ip_from   162.158.0.0/15;
+    set_real_ip_from   172.64.0.0/13;
+    set_real_ip_from   173.245.48.0/20;
+    set_real_ip_from   188.114.96.0/20;
+    set_real_ip_from   190.93.240.0/20;
+    set_real_ip_from   197.234.240.0/22;
+    set_real_ip_from   198.41.128.0/17;
+    # Cloudflare IPv6 节点段
+    set_real_ip_from   2400:cb00::/32;
+    set_real_ip_from   2606:4700::/32;
+    set_real_ip_from   2803:f800::/32;
+    set_real_ip_from   2405:b500::/32;
+    set_real_ip_from   2405:8100::/32;
+    set_real_ip_from   2a06:98c0::/29;
+    set_real_ip_from   2c0f:f248::/32;
+    # 如果没有使用 Cloudflare，把以上 set_real_ip_from 和 real_ip_header 全部注释掉即可
 
     include /etc/nginx/conf.d/*.conf;
 }
