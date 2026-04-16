@@ -57,6 +57,21 @@ impl RequestContext {
                 })
         };
 
+        // ── DEBUG: 打印请求头中的 IP 相关信息，帮助排查真实 IP 丢失问题 ──────
+        {
+            let cf_ip = req.headers().get("cf-connecting-ip")
+                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
+            let x_real = req.headers().get("x-real-ip")
+                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
+            let xff = req.headers().get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
+            let path = req.uri().path();
+            eprintln!(
+                "[IP-DEBUG] path={} tcp_remote={} CF-Connecting-IP={} X-Real-IP={} X-Forwarded-For={} => resolved={:?}",
+                path, remote_addr, cf_ip, x_real, xff, real_ip_str
+            );
+        }
+
         // 尝试把字符串解析成 IpAddr（供 GeoIP 查询使用）
         let (ip_str, ip_addr) = if let Some(ref ip_s) = real_ip_str {
             if let Ok(ip) = ip_s.parse::<std::net::IpAddr>() {
