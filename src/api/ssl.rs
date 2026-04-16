@@ -673,11 +673,143 @@ pub struct CertRequestPayload {
 pub async fn request_cert(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CertRequestPayload>,
-) -> Json<serde_json::Value> {
+) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::body::Bytes;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    // ── 快速校验（在返回 stream 之前同步完成）──────────────────────────────
     if !validate_domain(&payload.domain) {
-        return Json(serde_json::json!({ "status": "error", "message": "无效的域名格式" }));
+        let body = serde_json::json!({"type":"result","status":"error","message":"无效的域名格式"}).to_string() + "\n";
+        return axum::response::Response::builder()
+            .status(200)
+            .header("Content-Type", "application/x-ndjson; charset=utf-8")
+            .body(Body::from(body)).unwrap();
     }
 
+    // ── 构建 certbot cmd_args（同步，快速）─────────────────────────────────
+    // 这段逻辑保持与原来完全一致，只是改成同步路径，最终交给异步任务执行
+    let build_result = build_certbot_cmd(&state, &payload).await;
+    let (cmd_args, provider) = match build_result {
+        Ok(v) => v,
+        Err(msg) => {
+            let body = serde_json::json!({"type":"result","status":"error","message":msg}).to_string() + "\n";
+            return axum::response::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/x-ndjson; charset=utf-8")
+                .body(Body::from(body)).unwrap();
+        }
+    };
+
+    let domain_arg   = payload.domain.clone();
+    let is_wildcard  = payload.wildcard;
+    let state_clone  = state.clone();
+
+    // ── 创建 body 流 channel ───────────────────────────────────────────────
+    let (body_tx, body_rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(512);
+
+    tokio::spawn(async move {
+        // Helper: send a NDJSON line
+        macro_rules! send_line {
+            ($val:expr) => {{
+                let line = $val.to_string() + "\n";
+                let _ = body_tx.send(Ok(Bytes::from(line))).await;
+            }};
+        }
+
+        // ── 启动 certbot 流式执行 ──────────────────────────────────────────
+        let mut log_rx = match crate::api::nginx::docker_exec_output_stream(
+            "mini-waf-certbot".to_string(),
+            cmd_args,
+        ).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                send_line!(serde_json::json!({"type":"result","status":"error",
+                    "message": format!("启动 certbot 失败: {}", e)}));
+                return;
+            }
+        };
+
+        // ── 实时转发日志 ───────────────────────────────────────────────────
+        let mut all_output = String::new();
+        while let Some(text) = log_rx.recv().await {
+            all_output.push_str(&text);
+            send_line!(serde_json::json!({"type":"log","data": text}));
+        }
+
+        // ── 判断是否成功 ───────────────────────────────────────────────────
+        let ok = all_output.to_lowercase().contains("successfully") ||
+                 all_output.to_lowercase().contains("congratulations");
+        if !ok {
+            send_line!(serde_json::json!({"type":"result","status":"error",
+                "message": format!("证书申请失败，certbot 输出:\n{}",
+                    all_output.chars().take(2000).collect::<String>())}));
+            return;
+        }
+
+        // ── 申请成功：读取证书信息，写库 ──────────────────────────────────
+        let live_dir  = PathBuf::from(CERTS_ROOT).join("live").join(&domain_arg);
+        let cert_path = live_dir.join("fullchain.pem");
+        let (issuer, not_before, not_after) = parse_cert_file(&cert_path)
+            .unwrap_or_else(|| ("Let's Encrypt".to_string(), "".to_string(), "".to_string()));
+
+        let not_after_dt  = parse_naive_dt(&not_after);
+        let not_before_dt = parse_naive_dt(&not_before);
+        let cert_path_str = cert_path.to_string_lossy().to_string();
+        let key_path_str  = live_dir.join("privkey.pem").to_string_lossy().to_string();
+
+        let display_domain = if is_wildcard {
+            format!("*.{}", domain_arg)
+        } else {
+            domain_arg.clone()
+        };
+
+        let _ = sqlx::query(
+            "INSERT INTO ssl_certs (domain, cert_path, key_path, issuer, not_before, not_after, auto_renew, acme_method)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+             ON DUPLICATE KEY UPDATE cert_path=VALUES(cert_path), key_path=VALUES(key_path),
+                 issuer=VALUES(issuer), not_before=VALUES(not_before), not_after=VALUES(not_after),
+                 acme_method=VALUES(acme_method), updated_at=NOW()"
+        )
+        .bind(&display_domain)
+        .bind(&cert_path_str)
+        .bind(&key_path_str)
+        .bind(&issuer)
+        .bind(not_before_dt)
+        .bind(not_after_dt)
+        .bind(&provider)
+        .execute(&state_clone.db_pool)
+        .await;
+
+        let days = days_until_expiry(&not_after);
+        send_line!(serde_json::json!({
+            "type":    "result",
+            "status":  "success",
+            "message": format!("证书申请成功！到期时间: {}，剩余 {} 天", not_after, days),
+            "domain":  display_domain,
+            "not_after": not_after,
+            "days_remaining": days,
+        }));
+    });
+
+    let stream = ReceiverStream::new(body_rx);
+    let body   = Body::from_stream(stream);
+    axum::response::Response::builder()
+        .status(200)
+        .header("Content-Type", "application/x-ndjson; charset=utf-8")
+        .header("Cache-Control",     "no-cache")
+        .header("X-Accel-Buffering", "no")   // 禁止 nginx 缓冲，保证实时推送
+        .body(body)
+        .unwrap()
+}
+
+// ─── build_certbot_cmd ────────────────────────────────────────────────────────
+/// 构建 certbot 命令参数，并写入凭证 ini 文件（供 request_cert 流式接口调用）
+async fn build_certbot_cmd(
+    state: &Arc<AppState>,
+    payload: &CertRequestPayload,
+) -> Result<(Vec<String>, String), String> {
     // 1. 查找 ACME 账号（优先用指定 ID，否则用默认账号）
     let email = if let Some(acct_id) = payload.acme_account_id {
         let row = sqlx::query("SELECT email FROM acme_accounts WHERE id = ?")
@@ -685,52 +817,43 @@ pub async fn request_cert(
             .fetch_optional(&state.db_pool).await.unwrap_or(None);
         match row {
             Some(r) => { use sqlx::Row; r.get::<String, _>("email") }
-            None => return Json(serde_json::json!({ "status": "error", "message": "找不到指定的 ACME 账号" })),
+            None => return Err("找不到指定的 ACME 账号".to_string()),
         }
     } else {
-        // 默认账号
         let row = sqlx::query("SELECT email FROM acme_accounts WHERE is_default = 1 LIMIT 1")
             .fetch_optional(&state.db_pool).await.unwrap_or(None);
         match row {
             Some(r) => { use sqlx::Row; r.get::<String, _>("email") }
             None => {
-                // 降级：读旧 acme_config
                 let cfg = sqlx::query("SELECT email FROM acme_config WHERE id = 1")
                     .fetch_optional(&state.db_pool).await.unwrap_or(None);
                 match cfg {
                     Some(r) => { use sqlx::Row; r.get::<Option<String>, _>("email").unwrap_or_default() }
-                    None => return Json(serde_json::json!({ "status": "error", "message": "请先添加 ACME 账号" })),
+                    None => return Err("请先添加 ACME 账号".to_string()),
                 }
             }
         }
     };
 
     if email.is_empty() {
-        return Json(serde_json::json!({ "status": "error", "message": "ACME 账号邮箱为空，请检查账号配置" }));
+        return Err("ACME 账号邮箱为空，请检查账号配置".to_string());
     }
 
-    // 2. 查找 DNS 凭证（优先用指定 ID，否则默认 HTTP-01）
+    // 2. 查找 DNS 凭证（优先用指定 ID，否则 HTTP-01）
     let (provider, credentials_json) = if let Some(cred_id) = payload.dns_credential_id {
         let row = sqlx::query("SELECT provider, credentials_json FROM dns_credentials WHERE id = ?")
             .bind(cred_id).fetch_optional(&state.db_pool).await.unwrap_or(None);
         match row {
             Some(r) => {
                 use sqlx::Row;
-                (
-                    r.get::<String, _>("provider"),
-                    r.get::<Option<String>, _>("credentials_json").unwrap_or_default(),
-                )
+                (r.get::<String, _>("provider"),
+                 r.get::<Option<String>, _>("credentials_json").unwrap_or_default())
             }
-            None => return Json(serde_json::json!({ "status": "error", "message": "找不到指定的 DNS 凭证" })),
+            None => return Err("找不到指定的 DNS 凭证".to_string()),
         }
     } else {
-        // 无 DNS 凭证 → HTTP-01
         ("http01".to_string(), String::new())
     };
-
-    // 确保证书输出目录存在
-    let dir = cert_dir(&payload.domain);
-    let _ = std::fs::create_dir_all(&dir);
 
     let domain_arg = payload.domain.clone();
     let certbot_domain = if payload.wildcard {
@@ -739,23 +862,17 @@ pub async fn request_cert(
         domain_arg.clone()
     };
 
-    // certbot 命令不指定 --cert-path / --key-path，让 certbot 使用默认路径：
-    // certbot 容器内: /etc/letsencrypt/live/<domain>/fullchain.pem
-    // WAF 容器内: /certs/live/<domain>/fullchain.pem
-    // nginx 容器内: /etc/nginx/certs/live/<domain>/fullchain.pem
     let mut cmd_args: Vec<String> = vec![
         "certbot".into(), "certonly".into(),
         "--non-interactive".into(),
         "--agree-tos".into(),
         "--email".into(), email.clone(),
         "--domain".into(), certbot_domain.clone(),
-        // 主动申请时强制重新签发，避免 certbot 因证书尚未到期而拒绝执行
         "--force-renewal".into(),
     ];
 
     match provider.as_str() {
         "http01" => {
-            // Let's Encrypt HTTP-01 challenge：需要 nginx 能响应 /.well-known/acme-challenge/
             cmd_args.push("--webroot".into());
             cmd_args.push("--webroot-path".into());
             cmd_args.push("/var/www/certbot".into());
@@ -764,47 +881,30 @@ pub async fn request_cert(
             let creds = parse_credentials(&credentials_json);
             let dns_token  = creds.get("CF_DNS_API_TOKEN").cloned().unwrap_or_default();
             let zone_token = creds.get("CF_ZONE_API_TOKEN").cloned().unwrap_or_else(|| dns_token.clone());
-
             if dns_token.is_empty() {
-                return Json(serde_json::json!({
-                    "status": "error",
-                    "message": "请先在 DNS 凭证中填写 CF_DNS_API_TOKEN"
-                }));
+                return Err("请先在 DNS 凭证中填写 CF_DNS_API_TOKEN".to_string());
             }
-
-            // 凭证 ini 写到共享卷 (WAF 容器路径)，certbot 从对应路径读取
             let _ = std::fs::create_dir_all(CERTS_TMP_HOST);
-            // certbot-dns-cloudflare 双 Token 最小权限格式：
-            //   dns_cloudflare_api_token      = <Token with Zone:DNS:Edit>
-            //   dns_cloudflare_zone_api_token = <Token with Zone:Zone:Read>
-            // 两个 key 名称都不带 "_dns_"，参考官方文档：
-            // https://certbot-dns-cloudflare.readthedocs.io/
             let ini = if zone_token.is_empty() || zone_token == dns_token {
-                // 只有一个 Token 时，要求该 Token 同时具备 DNS:Edit + Zone:Read
                 format!("dns_cloudflare_api_token = {}\n", dns_token)
             } else {
-                // 分离双 Token 最小权限模式
-                format!(
-                    "dns_cloudflare_api_token = {}\ndns_cloudflare_zone_api_token = {}\n",
-                    dns_token, zone_token
-                )
+                format!("dns_cloudflare_api_token = {}\ndns_cloudflare_zone_api_token = {}\n",
+                    dns_token, zone_token)
             };
             let ini_host_path    = format!("{}/cf_{}.ini", CERTS_TMP_HOST,    domain_arg);
             let ini_certbot_path = format!("{}/cf_{}.ini", CERTS_TMP_CERTBOT, domain_arg);
             let _ = std::fs::write(&ini_host_path, &ini);
             #[cfg(unix)] {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&ini_host_path, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(&ini_host_path,
+                    std::fs::Permissions::from_mode(0o600));
             }
-            // 使用插件简写标志 --dns-cloudflare（等同于 --authenticator=dns-cloudflare，
-            // 但 certbot-dns-cloudflare 5.x 推荐使用简写形式）
             cmd_args.push("--dns-cloudflare".into());
             cmd_args.push("--dns-cloudflare-credentials".into());
-            cmd_args.push(ini_certbot_path);          // certbot 容器内路径
+            cmd_args.push(ini_certbot_path);
             cmd_args.push("--dns-cloudflare-propagation-seconds".into());
-            cmd_args.push("60".into());               // 60s 保证 DNS 传播完成
+            cmd_args.push("60".into());
         }
-
         "dns_dnspod" => {
             let creds = parse_credentials(&credentials_json);
             let id  = creds.get("DP_Id").cloned().unwrap_or_default();
@@ -831,84 +931,23 @@ pub async fn request_cert(
             cmd_args.push("--dns-aliyun-credentials".into());
             cmd_args.push(ini_certbot_path);
         }
-        _ => {
-            return Json(serde_json::json!({ "status": "error", "message": "不支持的验证方式" }));
-        }
+        _ => return Err("不支持的验证方式".to_string()),
     }
 
-    // 通过 docker exec 在 certbot 容器中执行（若有）或直接调用系统 certbot
-    let cmd_refs: Vec<&str> = cmd_args.iter().map(|s| s.as_str()).collect();
-    let output_bytes = crate::api::nginx::docker_exec_in("mini-waf-certbot", cmd_refs).await;
-
-    let output_str = match output_bytes {
-        Ok(b) => String::from_utf8_lossy(&b).trim().to_string(),
-        Err(e) => return Json(serde_json::json!({ "status": "error", "message": format!("certbot 执行失败: {}", e) })),
-    };
-
-    if !output_str.to_lowercase().contains("congratulations") && !output_str.to_lowercase().contains("successfully") {
-        return Json(serde_json::json!({
-            "status": "error",
-            "message": format!("证书申请失败，certbot 输出:\n{}", &output_str.chars().take(1000).collect::<String>()),
-        }));
-    }
-
-    // 申请成功后，从 certbot 默认 live/ 目录读取证书信息
-    // certbot 存储路径: /etc/letsencrypt/live/<domain>/ (在 WAF 中 = /certs/live/<domain>/)
-    let live_dir = PathBuf::from(CERTS_ROOT).join("live").join(&domain_arg);
-    let cert_path = live_dir.join("fullchain.pem");
-    let (issuer, not_before, not_after) = parse_cert_file(&cert_path)
-        .unwrap_or_else(|| ("Let's Encrypt".to_string(), "".to_string(), "".to_string()));
-
-    let not_after_dt  = parse_naive_dt(&not_after);
-    let not_before_dt = parse_naive_dt(&not_before);
-    let cert_path_str = cert_path.to_string_lossy().to_string();
-    let key_path_str  = live_dir.join("privkey.pem").to_string_lossy().to_string();
-
-    // 通配符证书在 DB 中存储为 *.domain，方便列表显示
-    let display_domain = if payload.wildcard {
-        format!("*.{}", domain_arg)
-    } else {
-        domain_arg.clone()
-    };
-
-    let _ = sqlx::query(
-        "INSERT INTO ssl_certs (domain, cert_path, key_path, issuer, not_before, not_after, auto_renew, acme_method)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-         ON DUPLICATE KEY UPDATE cert_path=VALUES(cert_path), key_path=VALUES(key_path),
-             issuer=VALUES(issuer), not_before=VALUES(not_before), not_after=VALUES(not_after),
-             acme_method=VALUES(acme_method), updated_at=NOW()"
-    )
-    .bind(&display_domain)      // 通配符存 *.domain
-    .bind(&cert_path_str)
-    .bind(&key_path_str)
-    .bind(&issuer)
-    .bind(not_before_dt)
-    .bind(not_after_dt)
-    .bind(&provider)
-    .execute(&state.db_pool)
-    .await;
-
-    let days = days_until_expiry(&not_after);
-    Json(serde_json::json!({
-        "status": "success",
-        "message": format!("证书申请成功！到期时间: {}，剩余 {} 天", not_after, days),
-        "domain": payload.domain,
-        "not_after": not_after,
-        "days_remaining": days,
-    }))
+    Ok((cmd_args, provider))
 }
 
 // ─── POST /ssl/certs/renew/:domain ───────────────────────────────────────────
 pub async fn renew_cert(
     State(state): State<Arc<AppState>>,
     Path(domain): Path<String>,
-) -> Json<serde_json::Value> {
-    // 从请求 body 构造 CertRequestPayload 并委托给 request_cert
+) -> axum::response::Response {
+    // 续签委托给流式的 request_cert
     let payload = CertRequestPayload {
         domain,
         wildcard: false,
-        acme_account_id:   None,   // 续签使用默认账号
-        dns_credential_id: None,   // 续签使用 HTTP-01
+        acme_account_id:   None,
+        dns_credential_id: None,
     };
     request_cert(State(state), Json(payload)).await
 }

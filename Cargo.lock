@@ -1473,6 +1473,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tower-http",
  "uuid",
  "x509-parser",
@@ -2620,6 +2621,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

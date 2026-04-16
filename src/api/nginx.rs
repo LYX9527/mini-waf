@@ -581,3 +581,171 @@ fn extract_exec_body(raw: &[u8]) -> String {
 
     String::from_utf8_lossy(&result).trim().to_string()
 }
+
+// ─── 流式 Docker exec（用于 certbot 证书申请实时日志）──────────────────────────
+
+/// 从 Docker multiplexed stream 中增量解析完整 frame，返回文本，并推进 *pos
+fn parse_docker_frames_incremental(decoded: &[u8], pos: &mut usize) -> Vec<String> {
+    let mut results = Vec::new();
+    let data = &decoded[*pos..];
+    let mut i = 0;
+    while i + 8 <= data.len() {
+        let stream_type = data[i];
+        let size = u32::from_be_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]) as usize;
+        if i + 8 + size > data.len() {
+            break; // 帧数据不完整，等待更多字节
+        }
+        if stream_type == 1 || stream_type == 2 { // stdout / stderr
+            if let Ok(text) = std::str::from_utf8(&data[i+8..i+8+size]) {
+                if !text.is_empty() {
+                    results.push(text.to_string());
+                }
+            }
+        }
+        i += 8 + size;
+    }
+    *pos += i;
+    results
+}
+
+/// 增量解码 HTTP chunked transfer encoding，返回 (consumed_input_bytes, decoded_output)
+fn decode_chunked_partial(data: &[u8]) -> (usize, Vec<u8>) {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        if let Some(crlf) = data[pos..].windows(2).position(|w| w == b"\r\n") {
+            let size_str = std::str::from_utf8(&data[pos..pos + crlf])
+                .unwrap_or("").split(';').next().unwrap_or("").trim();
+            let chunk_size = usize::from_str_radix(size_str, 16).unwrap_or(0);
+            if chunk_size == 0 { break; } // 终止 chunk
+            let data_start = pos + crlf + 2;
+            if data_start + chunk_size + 2 > data.len() { break; } // chunk 数据不完整
+            out.extend_from_slice(&data[data_start..data_start + chunk_size]);
+            pos = data_start + chunk_size + 2; // 跳过 chunk data + 尾随 \r\n
+        } else {
+            break;
+        }
+    }
+    (pos, out)
+}
+
+/// 启动容器内命令，以 channel 形式实时返回 stdout/stderr 文本片段
+/// （channel 关闭即表示命令执行完毕）
+pub async fn docker_exec_output_stream(
+    container: String,
+    cmd: Vec<String>,
+) -> Result<tokio::sync::mpsc::Receiver<String>, String> {
+    use tokio::net::UnixStream;
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+
+    // ── Step 1: 创建 exec 实例，获取 exec_id ────────────────────────────────
+    let create_body = serde_json::json!({
+        "AttachStdout": true,
+        "AttachStderr": true,
+        "Cmd": cmd,
+    });
+    let body_str = create_body.to_string();
+    let create_req = format!(
+        "POST /containers/{}/exec HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        container, body_str.len(), body_str
+    );
+    let mut sock = UnixStream::connect("/var/run/docker.sock").await
+        .map_err(|e| format!("无法连接 Docker Socket: {}", e))?;
+    sock.write_all(create_req.as_bytes()).await
+        .map_err(|e| format!("写入创建请求失败: {}", e))?;
+    sock.shutdown().await.ok();
+
+    let mut buf = vec![0u8; 8192];
+    let n = sock.read(&mut buf).await
+        .map_err(|e| format!("读取 exec 创建响应失败: {}", e))?;
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    let exec_id = if let Some(s) = resp.find("\"Id\":\"") {
+        let start = s + 6;
+        resp[start..].find('"')
+            .map(|end| resp[start..start + end].to_string())
+            .ok_or_else(|| "无法解析 exec ID".to_string())?
+    } else {
+        return Err(format!("容器 {} exec 创建失败: {}", container, resp));
+    };
+
+    // ── Step 2: 在后台任务中启动 exec，边读边发送文本 ──────────────────────
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
+    tokio::spawn(async move {
+        let start_body = serde_json::json!({"Detach": false, "Tty": false});
+        let start_str  = start_body.to_string();
+        // 注意：不加 Connection: close，保持连接直到命令结束
+        let start_req = format!(
+            "POST /exec/{}/start HTTP/1.1\r\nHost: localhost\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            exec_id, start_str.len(), start_str
+        );
+        let mut sock = match UnixStream::connect("/var/run/docker.sock").await {
+            Ok(s) => s,
+            Err(e) => { let _ = tx.send(format!("[错误] 连接失败: {}", e)).await; return; }
+        };
+        if let Err(e) = sock.write_all(start_req.as_bytes()).await {
+            let _ = tx.send(format!("[错误] 启动 exec 失败: {}", e)).await;
+            return;
+        }
+
+        // 读原始字节，先找 HTTP 头结束位置
+        let mut raw: Vec<u8>  = Vec::new();
+        let mut header_done   = false;
+        let mut is_chunked    = false;
+        let mut body_from     = 0usize;
+        let mut chunk_consume = 0usize; // raw[body_from + chunk_consume..] 是待解码区
+        let mut decoded: Vec<u8> = Vec::new();
+        let mut frame_pos     = 0usize; // decoded[frame_pos..] 是待解析 Docker frame 区
+        let mut tmp = vec![0u8; 4096];
+
+        loop {
+            match sock.read(&mut tmp).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    raw.extend_from_slice(&tmp[..n]);
+
+                    // 找 HTTP headers 结束
+                    if !header_done {
+                        if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_done = true;
+                            body_from   = p + 4;
+                            let hdr = &raw[..p];
+                            is_chunked  = hdr.windows(b"Transfer-Encoding: chunked".len())
+                                .any(|w| w.eq_ignore_ascii_case(b"Transfer-Encoding: chunked"));
+                            chunk_consume = 0;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    // 解码 body 新增字节到 decoded
+                    let body_slice = &raw[body_from..];
+                    if is_chunked {
+                        let (consumed, out) = decode_chunked_partial(&body_slice[chunk_consume..]);
+                        chunk_consume += consumed;
+                        decoded.extend_from_slice(&out);
+                    } else {
+                        // raw stream: 直接追加新增字节
+                        let already = decoded.len();
+                        let new_start = body_from + already;
+                        if raw.len() > new_start {
+                            decoded.extend_from_slice(&raw[new_start..]);
+                        }
+                    }
+
+                    // 从 decoded[frame_pos..] 解析完整 Docker frames
+                    for text in parse_docker_frames_incremental(&decoded, &mut frame_pos) {
+                        let _ = tx.send(text).await;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("[错误] 读取失败: {}", e)).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(rx)
+}

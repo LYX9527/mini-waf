@@ -137,6 +137,12 @@ export default function SSLManagement() {
   const [dnsProvider, setDnsProvider]         = useState('dns_cloudflare')
   const [dnsCreds, setDnsCreds]               = useState<Record<string, string>>({})
 
+  // certbot 实时日志
+  const [certLogOpen, setCertLogOpen]   = useState(false)
+  const [certLogs, setCertLogs]         = useState<string[]>([])
+  const [certLogDone, setCertLogDone]   = useState(false)
+  const [certLogError, setCertLogError] = useState<string | null>(null)
+
   useEffect(() => { fetchCerts(); fetchAccounts(); fetchDnsCredentials() }, [])
 
   // ── 证书 ──────────────────────────────────────────────────────────────────
@@ -178,19 +184,76 @@ export default function SSLManagement() {
   const handleRequestCert = async () => {
     try {
       const values = await requestForm.validateFields()
+
+      // 关闭申请表单，打开日志面板
+      setRequestOpen(false)
+      requestForm.resetFields()
+      setReqDnsCredId(null)
+      setCertLogs([])
+      setCertLogDone(false)
+      setCertLogError(null)
+      setCertLogOpen(true)
       setRequesting(true)
-      const res = await api.post('/ssl/certs/request', {
-        domain:            values.domain,
-        wildcard:          values.wildcard || false,
-        acme_account_id:   values.acme_account_id || undefined,
-        dns_credential_id: reqDnsCredId || undefined,
+
+      const token = localStorage.getItem('mini_waf_token')
+      const resp  = await fetch('/api/v1/ssl/certs/request', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          domain:            values.domain,
+          wildcard:          values.wildcard || false,
+          acme_account_id:   values.acme_account_id || undefined,
+          dns_credential_id: reqDnsCredId || undefined,
+        }),
       })
-      if (res.data.status === 'success') {
-        message.success(res.data.message)
-        setRequestOpen(false); requestForm.resetFields(); setReqDnsCredId(null); fetchCerts()
-      } else { message.error(res.data.message) }
-    } catch { message.error('申请失败，请检查 ACME 账号配置') }
-    finally { setRequesting(false) }
+
+      if (!resp.ok || !resp.body) {
+        setCertLogError(`HTTP 错误: ${resp.status}`)
+        setCertLogDone(true)
+        setRequesting(false)
+        return
+      }
+
+      const reader  = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let   buf     = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const evt = JSON.parse(line)
+            if (evt.type === 'log') {
+              setCertLogs(prev => [...prev, evt.data])
+            } else if (evt.type === 'result') {
+              if (evt.status === 'success') {
+                setCertLogDone(true)
+                message.success(evt.message)
+                fetchCerts()
+              } else {
+                setCertLogError(evt.message)
+                setCertLogDone(true)
+              }
+            }
+          } catch { /* 般略非 JSON 行 */ }
+        }
+      }
+      setCertLogDone(true)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '未知错误'
+      setCertLogError(msg)
+      setCertLogDone(true)
+    } finally {
+      setRequesting(false)
+    }
   }
 
   // ── 手动上传 ──────────────────────────────────────────────────────────────
@@ -596,6 +659,70 @@ export default function SSLManagement() {
         <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 6, padding: 16, fontFamily: 'monospace', fontSize: 12, color: '#c9d1d9', whiteSpace: 'pre', overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
           {templateModal.content}
         </div>
+      </Modal>
+
+      {/* ── certbot 实时日志 Modal ──────────────────────────────────────────── */}
+      <Modal
+        title={
+          <Space>
+            <ThunderboltOutlined style={{ color: certLogDone ? (certLogError ? '#f85149' : '#3fb950') : '#4493f8' }} />
+            证书申请进度
+          </Space>
+        }
+        open={certLogOpen}
+        onCancel={() => { if (certLogDone) { setCertLogOpen(false); setCertLogs([]) } }}
+        footer={certLogDone ? [
+          <Button key="close" type="primary"
+            danger={!!certLogError}
+            onClick={() => { setCertLogOpen(false); setCertLogs([]) }}>
+            {certLogError ? '关闭' : '完成'}
+          </Button>
+        ] : []}
+        closable={certLogDone}
+        maskClosable={false}
+        width={700}
+      >
+        {/* 进度提示 */}
+        {!certLogDone && (
+          <Alert type="info" showIcon style={{ marginBottom: 12 }}
+            message={<span>正在申请证书… <span style={{ color: '#8b949e', fontSize: 12 }}>（DNS 验证需等待约 60 秒 DNS 传播，请耐心）</span></span>}
+          />
+        )}
+        {certLogDone && !certLogError && (
+          <Alert type="success" showIcon message="🎉 证书申请成功！" style={{ marginBottom: 12 }} />
+        )}
+        {certLogError && (
+          <Alert type="error" showIcon message="申请失败" description={
+            <div style={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 6 }}>
+              {certLogError}
+            </div>
+          } style={{ marginBottom: 12 }} />
+        )}
+
+        {/* 日志终端 */}
+        <div
+          id="certbot-log-terminal"
+          style={{
+            background: '#0d1117', border: '1px solid #30363d', borderRadius: 6,
+            padding: '12px 16px', fontFamily: '"Fira Code", "Cascadia Code", monospace',
+            fontSize: 12, color: '#c9d1d9', minHeight: 220, maxHeight: 380,
+            overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}
+          ref={(el) => { if (el) el.scrollTop = el.scrollHeight }}
+        >
+          {certLogs.length === 0 && !certLogDone
+            ? <span style={{ color: '#8b949e' }}>等待 certbot 启动…</span>
+            : certLogs.map((line, i) => (
+                <span key={i} style={{ color: line.startsWith('[错误]') ? '#f85149' : '#c9d1d9' }}>
+                  {line}
+                </span>
+              ))
+          }
+          {!certLogDone && (
+            <span style={{ color: '#4493f8', animation: 'blink 1s step-end infinite' }}>▊</span>
+          )}
+        </div>
+        <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
       </Modal>
 
       {/* ── ACME 账号 Drawer ─────────────────────────────────────────────── */}
