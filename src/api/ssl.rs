@@ -337,7 +337,7 @@ pub async fn nginx_ssl_template(Path(domain): Path<String>) -> Json<serde_json::
 
     // 通配符证书需要同时匹配根域名和所有子域名
     let server_name = if domain.starts_with("*.") {
-        format!("{base_domain} {base_domain}")
+        format!("{base_domain} *.{base_domain}")
     } else {
         base_domain.to_string()
     };

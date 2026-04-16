@@ -25,7 +25,41 @@ pub struct RequestContext {
 
 impl RequestContext {
     pub fn new(req: &Request<Incoming>, remote_addr: SocketAddr) -> Self {
-        let ip_str = remote_addr.ip().to_string();
+        // ── 真实客户端 IP 提取链 ────────────────────────────────────────────
+        // 优先级：X-Real-IP > X-Forwarded-For(第一个) > TCP remote_addr
+        // 这样在 Nginx → WAF 架构下能正确拿到公网 IP 而不是 Nginx 容器的内网 IP
+        let real_ip_str: Option<String> = {
+            // 1. X-Real-IP（最准确，由上游 nginx proxy_set_header X-Real-IP $remote_addr 注入）
+            req.headers()
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    // 2. X-Forwarded-For：取第一个（最左/最原始）IP
+                    req.headers()
+                        .get("x-forwarded-for")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.split(',').next())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+        };
+
+        // 尝试把字符串解析成 IpAddr（供 GeoIP 查询使用）
+        let (ip_str, ip_addr) = if let Some(ref ip_s) = real_ip_str {
+            if let Ok(ip) = ip_s.parse::<std::net::IpAddr>() {
+                // 端口无意义，置 0
+                (ip_s.clone(), SocketAddr::new(ip, 0))
+            } else {
+                // 解析失败（可能是格式有问题），回退到 TCP 连接地址
+                (remote_addr.ip().to_string(), remote_addr)
+            }
+        } else {
+            // 没有代理头，直接用 TCP 连接地址
+            (remote_addr.ip().to_string(), remote_addr)
+        };
+
         let path_query = req
             .uri()
             .path_and_query()
@@ -54,7 +88,7 @@ impl RequestContext {
 
         Self {
             ip: ip_str,
-            ip_addr: remote_addr,
+            ip_addr,
             user_agent,
             path_query,
             path,

@@ -38,6 +38,7 @@ function CodeEditor({
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
       fontSize: 13,
       lineHeight: '20px',
+      height,
     }}>
       <div style={{
         padding: '12px 0',
@@ -47,6 +48,7 @@ function CodeEditor({
         userSelect: 'none',
         minWidth: 44,
         borderRight: '1px solid #21262d',
+        overflowY: 'hidden',
       }}>
         {lines.map((_, i) => (
           <div key={i} style={{ padding: '0 10px', height: 20 }}>{i + 1}</div>
@@ -69,10 +71,12 @@ function CodeEditor({
           fontFamily: 'inherit',
           fontSize: 'inherit',
           lineHeight: 'inherit',
-          height,
+          height: '100%',
+          boxSizing: 'border-box',
           tabSize: 4,
           whiteSpace: 'pre',
           overflowX: 'auto',
+          overflowY: 'auto',
         }}
       />
     </div>
