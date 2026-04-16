@@ -310,18 +310,28 @@ pub async fn delete_cert(
 // ─── GET /ssl/nginx-template/:domain ─────────────────────────────────────────
 /// 生成该域名的 Nginx HTTPS server block 模板
 pub async fn nginx_ssl_template(Path(domain): Path<String>) -> Json<serde_json::Value> {
-    if !validate_domain(&domain) {
+    let base_domain = domain.trim_start_matches("*.");
+    if !validate_domain(base_domain) {
         return Json(serde_json::json!({ "status": "error", "message": "无效的域名" }));
     }
 
-    let cert_path = format!("{}/{}/fullchain.pem", NGINX_CERTS_ROOT, domain);
-    let key_path  = format!("{}/{}/privkey.pem",  NGINX_CERTS_ROOT, domain);
+    // certbot 默认存储在 live/<base_domain>/ 子目录
+    let cert_path = format!("{}/live/{}/fullchain.pem", NGINX_CERTS_ROOT, base_domain);
+    let key_path  = format!("{}/live/{}/privkey.pem",  NGINX_CERTS_ROOT, base_domain);
+
+    // 通配符证书需要同时匹配根域名和所有子域名
+    let server_name = if domain.starts_with("*.") {
+        format!("{base_domain} {base_domain}")
+    } else {
+        base_domain.to_string()
+    };
 
     let template = format!(
         r#"# HTTPS 站点: {domain}
 server {{
-    listen 443 ssl http2;
-    server_name {domain};
+    listen 443 ssl;
+    http2  on;
+    server_name {server_name};
 
     ssl_certificate     {cert_path};
     ssl_certificate_key {key_path};
@@ -355,11 +365,12 @@ server {{
 # HTTP → HTTPS 强制跳转
 server {{
     listen 80;
-    server_name {domain};
+    server_name {server_name};
     return 301 https://$host$request_uri;
 }}
 "#,
         domain = domain,
+        server_name = server_name,
         cert_path = cert_path,
         key_path = key_path,
     );
@@ -712,17 +723,16 @@ pub async fn request_cert(
         domain_arg.clone()
     };
 
-    // 根据 provider 构建 certbot 命令
-    // 注意：路径使用 certbot 容器视角 (nginx_certs 挂载于 /etc/letsencrypt)
-    let certbot_cert_dir = format!("{}/{}", CERTBOT_CERTS_ROOT, domain_arg);
+    // certbot 命令不指定 --cert-path / --key-path，让 certbot 使用默认路径：
+    // certbot 容器内: /etc/letsencrypt/live/<domain>/fullchain.pem
+    // WAF 容器内: /certs/live/<domain>/fullchain.pem
+    // nginx 容器内: /etc/nginx/certs/live/<domain>/fullchain.pem
     let mut cmd_args: Vec<String> = vec![
         "certbot".into(), "certonly".into(),
         "--non-interactive".into(),
         "--agree-tos".into(),
         "--email".into(), email.clone(),
         "--domain".into(), certbot_domain.clone(),
-        "--cert-path".into(), format!("{}/fullchain.pem", certbot_cert_dir),
-        "--key-path".into(),  format!("{}/privkey.pem",  certbot_cert_dir),
     ];
 
     match provider.as_str() {
@@ -826,15 +836,24 @@ pub async fn request_cert(
         }));
     }
 
-    // 申请成功后，解析证书信息并入库
-    let cert_path = dir.join("fullchain.pem");
+    // 申请成功后，从 certbot 默认 live/ 目录读取证书信息
+    // certbot 存储路径: /etc/letsencrypt/live/<domain>/ (在 WAF 中 = /certs/live/<domain>/)
+    let live_dir = PathBuf::from(CERTS_ROOT).join("live").join(&domain_arg);
+    let cert_path = live_dir.join("fullchain.pem");
     let (issuer, not_before, not_after) = parse_cert_file(&cert_path)
         .unwrap_or_else(|| ("Let's Encrypt".to_string(), "".to_string(), "".to_string()));
 
     let not_after_dt  = parse_naive_dt(&not_after);
     let not_before_dt = parse_naive_dt(&not_before);
     let cert_path_str = cert_path.to_string_lossy().to_string();
-    let key_path_str  = dir.join("privkey.pem").to_string_lossy().to_string();
+    let key_path_str  = live_dir.join("privkey.pem").to_string_lossy().to_string();
+
+    // 通配符证书在 DB 中存储为 *.domain，方便列表显示
+    let display_domain = if payload.wildcard {
+        format!("*.{}", domain_arg)
+    } else {
+        domain_arg.clone()
+    };
 
     let _ = sqlx::query(
         "INSERT INTO ssl_certs (domain, cert_path, key_path, issuer, not_before, not_after, auto_renew, acme_method)
@@ -843,7 +862,7 @@ pub async fn request_cert(
              issuer=VALUES(issuer), not_before=VALUES(not_before), not_after=VALUES(not_after),
              acme_method=VALUES(acme_method), updated_at=NOW()"
     )
-    .bind(&payload.domain)
+    .bind(&display_domain)      // 通配符存 *.domain
     .bind(&cert_path_str)
     .bind(&key_path_str)
     .bind(&issuer)
