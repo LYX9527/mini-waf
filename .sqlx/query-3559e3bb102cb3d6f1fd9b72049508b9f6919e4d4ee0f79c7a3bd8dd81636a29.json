@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM rules WHERE keyword = ? AND target_field = ? AND match_type = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3559e3bb102cb3d6f1fd9b72049508b9f6919e4d4ee0f79c7a3bd8dd81636a29"
+}
