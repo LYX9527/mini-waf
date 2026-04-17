@@ -108,8 +108,10 @@ pub async fn check_rate_limit(
         return None;
     }
 
-    // 基于请求计数奇偶性交替触发 JS 质询 / 数学题质询
-    if count % 2 == 0 {
+    // 基于超出阈值的次数交替触发 JS 质询 / 数学题质询
+    // 保证首次触发一定优先无感 JS 质询 (over_count = 1)
+    let over_count = count - threshold;
+    if over_count % 2 != 0 {
         // 路线 A: JS 无感质询
         println!("🤖 频率异常，触发 [JS 质询]: IP {}", ctx.ip);
         state.captcha_answers.write().await.insert(ctx.ip.clone(), (0, 0));

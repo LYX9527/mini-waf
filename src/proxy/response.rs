@@ -136,46 +136,100 @@ pub fn render_captcha_page(client_ip: &str, num1: u32, num2: u32, redirect_url: 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WAF矩阵 | 质询</title>
+    <title>WAF 防御矩阵 | 安全质询</title>
     <style>
-        body {{ background-color: #0b0f19; color: #c9d1d9; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
-        .waf-card {{ background: rgba(22, 27, 34, 0.8); border: 1px solid #30363d; border-radius: 12px; padding: 40px; box-shadow: 0 0 30px rgba(0, 240, 255, 0.2); max-width: 450px; width: 90%; text-align: center; backdrop-filter: blur(10px); position: relative; }}
-        .shield-icon {{ width: 60px; height: 70px; margin: 0 auto 15px; position: relative; border: 3px solid #00f0ff; border-top: none; border-radius: 0 0 50% 50% / 0 0 20px 20px; box-shadow: 0 0 15px rgba(0, 240, 255, 0.5), inset 0 0 10px rgba(0, 240, 255, 0.2); }}
-        .shield-icon::before {{ content: ''; position: absolute; top: -10px; left: -3px; width: 66px; height: 10px; background: #0b0f19; border-left: 3px solid #00f0ff; border-right: 3px solid #00f0ff; border-radius: 5px 5px 0 0; }}
-        .shield-icon::after {{ content: ''; position: absolute; top: 15px; left: 15px; width: 30px; height: 35px; border-left: 3px solid #00f0ff; border-bottom: 3px solid #00f0ff; border-radius: 0 0 5px 25px / 0 0 5px 15px; transform: rotate(-45deg); opacity: 0.7; }}
-        .title {{ color: #00f0ff; font-size: 20px; font-weight: bold; margin-bottom: 12px; text-shadow: 0 0 10px rgba(0, 240, 255, 0.5); text-transform: uppercase; letter-spacing: 2px; }}
-        .desc {{ color: #8b949e; font-size: 14px; line-height: 1.6; margin-bottom: 30px; }}
-        .captcha-box {{ background: #0d1117; border: 1px solid #30363d; padding: 25px 20px; border-radius: 8px; margin-bottom: 25px; box-shadow: inset 0 0 15px rgba(0,0,0,0.3); }}
-        .math-problem {{ font-size: 26px; color: #fff; letter-spacing: 3px; margin-bottom: 20px; font-weight: bold; }}
-        .math-problem span {{ color: #00f0ff; text-shadow: 0 0 5px rgba(0, 240, 255, 0.3); }}
-        input[type="number"] {{ background: #010409; border: 1px solid #30363d; color: #00f0ff; padding: 12px 15px; font-size: 20px; width: 120px; text-align: center; border-radius: 4px; outline: none; transition: all 0.3s ease; font-family: monospace; -moz-appearance: textfield; }}
+        body {{ background-color: #050505; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-image: radial-gradient(circle at center, #111827 0%, #000000 100%); }}
+        .waf-card {{ background: rgba(17, 24, 39, 0.7); border: 1px solid rgba(55, 65, 81, 0.5); border-radius: 16px; padding: 48px 40px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(0, 240, 255, 0.1); max-width: 420px; width: 90%; text-align: center; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); position: relative; overflow: hidden; }}
+        .waf-card::before {{ content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(90deg, #00f0ff, #7000ff); }}
+        .shield-icon {{ width: 56px; height: 56px; margin: 0 auto 24px; display: block; filter: drop-shadow(0 0 12px rgba(0,240,255,0.6)); animation: pulse 2.5s infinite ease-in-out; }}
+        @keyframes pulse {{ 0% {{ filter: drop-shadow(0 0 8px rgba(0,240,255,0.4)); transform: scale(1); }} 50% {{ filter: drop-shadow(0 0 16px rgba(0,240,255,0.8)); transform: scale(1.05); }} 100% {{ filter: drop-shadow(0 0 8px rgba(0,240,255,0.4)); transform: scale(1); }} }}
+        .title {{ color: #f9fafb; font-size: 22px; font-weight: 700; margin-bottom: 12px; letter-spacing: 0.5px; }}
+        .desc {{ color: #9ca3af; font-size: 14px; line-height: 1.6; margin-bottom: 32px; }}
+        .desc strong {{ color: #e5e7eb; }}
+        .captcha-container {{ background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(75, 85, 99, 0.4); padding: 24px; border-radius: 12px; margin-bottom: 30px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.5); display: flex; flex-direction: column; align-items: center; }}
+        canvas {{ background-color: rgba(17, 24, 39, 0.4); border: 1px dashed rgba(75, 85, 99, 0.6); border-radius: 8px; margin-bottom: 24px; user-select: none; pointer-events: none; }}
+        input[type="number"] {{ background: rgba(17, 24, 39, 0.8); border: 1px solid rgba(75, 85, 99, 0.6); color: #00f0ff; padding: 14px 16px; font-size: 24px; width: 140px; text-align: center; border-radius: 8px; outline: none; transition: all 0.3s ease; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: bold; -moz-appearance: textfield; }}
         input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-inner-spin-button {{ -webkit-appearance: none; margin: 0; }}
-        input[type="number"]:focus {{ border-color: #00f0ff; box-shadow: 0 0 15px rgba(0, 240, 255, 0.4); }}
-        button {{ background: transparent; border: 1px solid #00f0ff; color: #00f0ff; padding: 12px 35px; font-size: 15px; cursor: pointer; border-radius: 4px; transition: all 0.3s ease; text-transform: uppercase; font-family: monospace; font-weight: bold; margin-top: 10px; letter-spacing: 1px; }}
-        button:hover {{ background: #00f0ff; color: #000; box-shadow: 0 0 25px rgba(0, 240, 255, 0.7); text-shadow: none; }}
-        .ip-info {{ margin-top: 35px; font-size: 11px; color: #484f58; letter-spacing: 1px; }}
+        input[type="number"]:focus {{ border-color: #00f0ff; box-shadow: 0 0 0 3px rgba(0, 240, 255, 0.2); }}
+        button {{ background: linear-gradient(135deg, #00f0ff 0%, #0099ff 100%); border: none; color: #000; padding: 14px 40px; font-size: 16px; cursor: pointer; border-radius: 8px; transition: all 0.3s ease; font-weight: 700; width: 100%; letter-spacing: 0.5px; box-shadow: 0 4px 12px rgba(0, 240, 255, 0.3); }}
+        button:hover {{ transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0, 240, 255, 0.4); }}
+        button:active {{ transform: translateY(0); }}
+        .ip-info {{ margin-top: 32px; font-size: 12px; color: #6b7280; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
     </style>
 </head>
 <body>
     <div class="waf-card">
-        <div class="shield-icon"></div>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="shield-icon" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <path d="M12 8v4"></path>
+            <circle cx="12" cy="16" r="1.5"></circle>
+        </svg>
         <div class="title">Security Challenge</div>
-        <div class="desc">系统检测到您的网络请求频率异常。<br>请证明您是人类，以继续访问该网站。</div>
+        <div class="desc">系统检测到您的网络请求频率过快。<br>请计算下方结果以证明您是<strong>真实用户</strong>。</div>
 
         <form action="/.waf/verify" method="POST">
             <input type="hidden" name="redirect" value="{redirect_url}">
 
-            <div class="captcha-box">
-                <div class="math-problem">{num1} + {num2} = ?</div>
-                <input type="number" name="answer" required autocomplete="off" placeholder="答案">
+            <div class="captcha-container">
+                <canvas id="captchaCanvas" width="240" height="70"></canvas>
+                <input type="number" name="answer" required autocomplete="off" placeholder="输入答案" autofocus>
             </div>
             <button type="submit">Verify Now / 提交验证</button>
         </form>
 
-        <div class="ip-info">Client IP: {client_ip} | Rust WAF 矩阵安全防御系统 v1.0</div>
+        <div class="ip-info">Client IP: {client_ip} | Rust WAF 矩阵</div>
     </div>
+
+    <script>
+        (function() {{
+            var n1 = parseInt('{num1}', 10);
+            var n2 = parseInt('{num2}', 10);
+            var operator = String.fromCharCode(43);
+            var t = n1 + ' ' + operator + ' ' + n2 + ' = ?';
+
+            var c = document.getElementById('captchaCanvas');
+            var ctx = c.getContext('2d');
+
+            // Draw noise lines
+            for(var i=0; i<8; i++) {{
+                ctx.strokeStyle = 'rgba(0, 240, 255, ' + (Math.random()*0.3 + 0.1) + ')';
+                ctx.lineWidth = Math.random() * 2 + 1;
+                ctx.beginPath();
+                ctx.moveTo(Math.random() * 240, Math.random() * 70);
+                ctx.lineTo(Math.random() * 240, Math.random() * 70);
+                ctx.stroke();
+            }}
+
+            // Draw noise dots
+            for(var i=0; i<40; i++) {{
+                ctx.fillStyle = 'rgba(0, 240, 255, ' + (Math.random()*0.3 + 0.1) + ')';
+                ctx.beginPath();
+                ctx.arc(Math.random() * 240, Math.random() * 70, Math.random() * 2, 0, Math.PI*2);
+                ctx.fill();
+            }}
+
+            ctx.font = 'bold 34px monospace';
+            ctx.fillStyle = '#00f0ff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            var xOffset = 25;
+            for (var i = 0; i < t.length; i++) {{
+                ctx.save();
+                ctx.translate(xOffset, 35 + (Math.random() * 8 - 4));
+                ctx.rotate((Math.random() * 0.3 - 0.15));
+                ctx.shadowColor = 'rgba(0, 240, 255, 0.4)';
+                ctx.shadowBlur = 5;
+                ctx.fillText(t.charAt(i), 0, 0);
+                ctx.restore();
+
+                xOffset += (t.charAt(i) === ' ' ? 12 : (t.charAt(i) === operator ? 22 : 24));
+            }}
+        }})();
+    </script>
 </body>
 </html>"#,
+        color = "#00f0ff",
         redirect_url = redirect_url,
         num1 = num1,
         num2 = num2,
