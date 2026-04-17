@@ -51,7 +51,6 @@ pub async fn update_settings(
             Ok(r) => {
                 if r.rows_affected() > 0 {
                     updated += 1;
-                    // 同步更新内存缓存（保存到 DB 后立刻生效，无需重启）
                     match key.as_str() {
                         "custom_block_page" => {
                             let mut cache = state.custom_block_page.write().await;
@@ -66,6 +65,72 @@ pub async fn update_settings(
                                 .collect();
                             let mut blocked = state.geo_blocked_countries.write().await;
                             *blocked = new_set;
+                        }
+                        "rate_limit_threshold" => {
+                            if let Ok(v) = value.parse() {
+                                let mut s = state.settings.write().await;
+                                s.rate_limit_threshold = v;
+                            }
+                        }
+                        "penalty_ban_score" => {
+                            if let Ok(v) = value.parse() {
+                                let mut s = state.settings.write().await;
+                                s.penalty_ban_score = v;
+                            }
+                        }
+                        "penalty_attack_score" => {
+                            if let Ok(v) = value.parse() {
+                                let mut s = state.settings.write().await;
+                                s.penalty_attack_score = v;
+                            }
+                        }
+                        "trust_upstream_proxy" => {
+                            let mut s = state.settings.write().await;
+                            s.trust_upstream_proxy = value == "1" || value.to_lowercase() == "true";
+                        }
+                        "captcha_ttl_secs" => {
+                            if let Ok(v) = value.parse() {
+                                {
+                                    let mut s = state.settings.write().await;
+                                    s.captcha_ttl_secs = v;
+                                }
+                                *state.captcha_answers.write().await = moka::sync::Cache::builder()
+                                    .time_to_live(std::time::Duration::from_secs(v))
+                                    .build();
+                            }
+                        }
+                        "token_ttl_secs" => {
+                            if let Ok(v) = value.parse() {
+                                {
+                                    let mut s = state.settings.write().await;
+                                    s.token_ttl_secs = v;
+                                }
+                                *state.verified_tokens.write().await = moka::sync::Cache::builder()
+                                    .time_to_live(std::time::Duration::from_secs(v))
+                                    .build();
+                            }
+                        }
+                        "rate_limit_window_secs" => {
+                            if let Ok(v) = value.parse() {
+                                {
+                                    let mut s = state.settings.write().await;
+                                    s.rate_limit_window_secs = v;
+                                }
+                                *state.rate_limiter.write().await = moka::sync::Cache::builder()
+                                    .time_to_live(std::time::Duration::from_secs(v))
+                                    .build();
+                            }
+                        }
+                        "penalty_ttl_secs" => {
+                            if let Ok(v) = value.parse() {
+                                {
+                                    let mut s = state.settings.write().await;
+                                    s.penalty_ttl_secs = v;
+                                }
+                                *state.penalty_box.write().await = moka::sync::Cache::builder()
+                                    .time_to_live(std::time::Duration::from_secs(v))
+                                    .build();
+                            }
                         }
                         _ => {}
                     }

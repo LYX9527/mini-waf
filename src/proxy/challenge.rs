@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// 调用者应先检查 ctx.is_waf_endpoint()
 pub async fn handle_challenge_endpoint(
     ctx: &RequestContext,
-    req: Request<Incoming>,
+    req: Request<Either<Incoming, Full<Bytes>>>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
     if ctx.path_query == "/.waf/js_verify" {
@@ -24,10 +24,10 @@ pub async fn handle_challenge_endpoint(
 /// 处理 JS 质询验证 (POST /.waf/js_verify)
 async fn handle_js_verify(
     ctx: &RequestContext,
-    req: Request<Incoming>,
+    req: Request<Either<Incoming, Full<Bytes>>>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
-    let whole_body = match req.collect().await {
+    let whole_body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => {
             return render_challenge_failure(ctx);
@@ -56,9 +56,9 @@ async fn handle_js_verify(
             ip: ctx.ip.clone(),
             user_agent: ctx.user_agent.clone(),
         };
-        state.verified_tokens.insert(clearance_token.clone(), fingerprint);
-        state.rate_limiter.invalidate(&ctx.ip);
-        state.captcha_answers.invalidate(&ctx.ip);
+        state.verified_tokens.write().await.insert(clearance_token.clone(), fingerprint);
+        state.rate_limiter.write().await.invalidate(&ctx.ip);
+        state.captcha_answers.write().await.invalidate(&ctx.ip);
 
         let cookie_string = format!(
             "waf_clearance={}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax",
@@ -79,10 +79,10 @@ async fn handle_js_verify(
 /// 处理数学验证码验证 (POST /.waf/verify)
 async fn handle_captcha_verify(
     ctx: &RequestContext,
-    req: Request<Incoming>,
+    req: Request<Either<Incoming, Full<Bytes>>>,
     state: &Arc<AppState>,
 ) -> Response<Either<Incoming, Full<Bytes>>> {
-    let whole_body = match req.collect().await {
+    let whole_body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => {
             return render_challenge_failure(ctx);
@@ -103,7 +103,7 @@ async fn handle_captcha_verify(
         }
     }
 
-    let expected_answer = match state.captcha_answers.get(&ctx.ip) {
+    let expected_answer = match state.captcha_answers.read().await.get(&ctx.ip) {
         Some((n1, n2)) => n1 + n2,
         None => 999999, // 超时不存在，不可能答对
     };
@@ -118,10 +118,10 @@ async fn handle_captcha_verify(
             ip: ctx.ip.clone(),
             user_agent: ctx.user_agent.clone(),
         };
-        state.verified_tokens.insert(clearance_token.clone(), fingerprint);
-        state.rate_limiter.invalidate(&ctx.ip);
-        state.penalty_box.invalidate(&ctx.ip);
-        state.captcha_answers.invalidate(&ctx.ip);
+        state.verified_tokens.write().await.insert(clearance_token.clone(), fingerprint);
+        state.rate_limiter.write().await.invalidate(&ctx.ip);
+        state.penalty_box.write().await.invalidate(&ctx.ip);
+        state.captcha_answers.write().await.invalidate(&ctx.ip);
 
         let cookie_string = format!(
             "waf_clearance={}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax",

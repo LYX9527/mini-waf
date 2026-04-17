@@ -21,6 +21,7 @@ const settingLabels: { [key: string]: string } = {
   penalty_ttl_secs: '惩罚分过期时间（秒）',
   token_ttl_secs: '通行令牌有效期（秒）',
   captcha_ttl_secs: '验证码有效期（秒）',
+  trust_upstream_proxy: '信任上游代理头 (如配置了 Cloudflare 等 CDN)',
 }
 
 export default function SystemSettings() {
@@ -42,6 +43,8 @@ export default function SystemSettings() {
         } else if (key === 'geo_blocked_countries') {
           const v = (val as SettingItem).value
           formValues[key] = v ? v.split(',').filter(Boolean) : []
+        } else if (key === 'trust_upstream_proxy') {
+          formValues[key] = (val as SettingItem).value === '1' || (val as SettingItem).value.toLowerCase() === 'true'
         } else {
           formValues[key] = parseInt((val as SettingItem).value, 10)
         }
@@ -65,6 +68,8 @@ export default function SystemSettings() {
       for (const [key, val] of Object.entries(values)) {
         if (key === 'geo_blocked_countries' && Array.isArray(val)) {
           settingsPayload[key] = val.join(',')
+        } else if (key === 'trust_upstream_proxy') {
+          settingsPayload[key] = val ? '1' : '0'
         } else if (val !== undefined && val !== null) {
           settingsPayload[key] = String(val)
         }
@@ -100,7 +105,15 @@ export default function SystemSettings() {
               }
               extra={<span style={{ color: '#484f58' }}>当前值: {item.value}</span>}
             >
-              {key === 'custom_block_page' ? (
+              {key === 'trust_upstream_proxy' ? (
+                <Select
+                  style={{ width: 300 }}
+                  options={[
+                    { label: '关闭 (强校验直连物理网卡 IP)', value: false },
+                    { label: '开启 (信任 CF-Connecting-IP 等头)', value: true },
+                  ]}
+                />
+              ) : key === 'custom_block_page' ? (
                 <Input.TextArea rows={6} style={{ width: '100%', fontFamily: 'monospace' }} />
               ) : key === 'geo_blocked_countries' ? (
                 <Select

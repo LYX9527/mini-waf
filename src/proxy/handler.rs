@@ -1,7 +1,7 @@
 use super::response::*;
 use super::{challenge, guard, router};
 use crate::state::{AccessLog, AppState};
-use http_body_util::{Either, Full};
+use http_body_util::{Either, Full, BodyExt};
 use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::header::HeaderValue;
@@ -21,17 +21,15 @@ pub struct RequestContext {
     pub target_url: String,
     pub method: Method,
     pub raw_headers: HeaderMap<HeaderValue>,
+    pub body_bytes: Option<Bytes>,
 }
 
 impl RequestContext {
-    pub fn new(req: &Request<Incoming>, remote_addr: SocketAddr) -> Self {
+    pub fn new<B>(req: &Request<B>, remote_addr: SocketAddr, body_bytes: Option<Bytes>, trust_upstream_proxy: bool) -> Self {
         // ── 真实客户端 IP 提取链 ────────────────────────────────────────────
         // 优先级：CF-Connecting-IP > X-Real-IP > X-Forwarded-For(第一个) > TCP remote_addr
-        // CF-Connecting-IP: Cloudflare 注入的真实客户端 IP，Nginx 通过 proxy_set_header 透传
-        //   Cloudflare 会强制替换该头（用户无法伪造），是最可信的来源
-        // X-Real-IP: 由 Nginx real_ip_module 还原后通过 proxy_set_header 注入
-        // X-Forwarded-For: 取最左一个（原始客户端），但可能被伪造
-        let real_ip_str: Option<String> = {
+        // 仅当 trust_upstream_proxy 为 true 时才信赖前端头部。
+        let real_ip_str: Option<String> = if trust_upstream_proxy {
             // 1. CF-Connecting-IP（Cloudflare 架构下最可信）
             req.headers()
                 .get("cf-connecting-ip")
@@ -55,22 +53,10 @@ impl RequestContext {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                 })
+        } else {
+            None
         };
 
-        // ── DEBUG: 打印请求头中的 IP 相关信息，帮助排查真实 IP 丢失问题 ──────
-        {
-            let cf_ip = req.headers().get("cf-connecting-ip")
-                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
-            let x_real = req.headers().get("x-real-ip")
-                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
-            let xff = req.headers().get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok()).unwrap_or("(absent)");
-            let path = req.uri().path();
-            eprintln!(
-                "[IP-DEBUG] path={} tcp_remote={} CF-Connecting-IP={} X-Real-IP={} X-Forwarded-For={} => resolved={:?}",
-                path, remote_addr, cf_ip, x_real, xff, real_ip_str
-            );
-        }
 
         // 尝试把字符串解析成 IpAddr（供 GeoIP 查询使用）
         let (ip_str, ip_addr) = if let Some(ref ip_s) = real_ip_str {
@@ -122,6 +108,7 @@ impl RequestContext {
             target_url,
             method: req.method().clone(),
             raw_headers: req.headers().clone(),
+            body_bytes,
         }
     }
 
@@ -194,7 +181,38 @@ pub async fn handle_request(
     remote_addr: SocketAddr,
     state: Arc<AppState>,
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
-    let ctx = RequestContext::new(&req, remote_addr);
+    // 限制请求体检查大小为 2MB
+    const MAX_INSPECT_BODY_SIZE: u64 = 2 * 1024 * 1024;
+    
+    let (parts, incoming_body) = req.into_parts();
+    let method_opts_body = parts.method == Method::POST || parts.method == Method::PUT || parts.method == Method::PATCH;
+
+    let mut body_bytes_opt = None;
+    let forwarded_body = if method_opts_body {
+        let content_length = parts.headers.get(hyper::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        
+        if content_length > 0 && content_length <= MAX_INSPECT_BODY_SIZE {
+            match incoming_body.collect().await {
+                Ok(collected) => {
+                    let b = collected.to_bytes();
+                    body_bytes_opt = Some(b.clone());
+                    Either::Right(Full::new(b))
+                }
+                Err(_) => Either::Right(Full::new(Bytes::from("")))
+            }
+        } else {
+            Either::Left(incoming_body)
+        }
+    } else {
+        Either::Left(incoming_body)
+    };
+
+    let req_for_routing = Request::from_parts(parts, forwarded_body);
+    let trust_proxy = state.settings.read().await.trust_upstream_proxy;
+    let ctx = RequestContext::new(&req_for_routing, remote_addr, body_bytes_opt, trust_proxy);
 
     // 原子计数器：总请求数 +1
     let total = state.counters.total_requests_today.fetch_add(1, Ordering::Relaxed) + 1;
@@ -220,9 +238,13 @@ pub async fn handle_request(
         let whitelist = state.ip_whitelist.read().await;
         if whitelist.contains(&ctx.ip) {
             drop(whitelist);
-            // 白名单直接跳过所有安全检查
-            send_access_log(&state, &ctx, 200, false, None);
-            return router::route_and_proxy(req, &ctx, &state).await;
+            // 白名单直接跳过所有安全检查，但不再立刻标记返回 200 进行日志。
+            let result = router::route_and_proxy(req_for_routing, &ctx, &state).await;
+            match &result {
+                Ok(resp) => { send_access_log(&state, &ctx, resp.status().as_u16(), false, None); }
+                Err(_) => { send_access_log(&state, &ctx, 502, false, None); }
+            }
+            return result;
         }
         drop(whitelist);
 
@@ -279,17 +301,17 @@ pub async fn handle_request(
     }
 
     // Stage 0.5: 令牌验证
-    let is_verified = guard::verify_token(&ctx, &state);
+    let is_verified = guard::verify_token(&ctx, &state).await;
 
     // Stage 0.75: WAF 内部端点 (质询提交)
     if ctx.is_waf_endpoint() {
-        let resp = challenge::handle_challenge_endpoint(&ctx, req, &state).await;
+        let resp = challenge::handle_challenge_endpoint(&ctx, req_for_routing, &state).await;
         send_access_log(&state, &ctx, resp.status().as_u16(), false, None);
         return Ok(resp);
     }
 
     // Stage 0.9: 质询死锁检测
-    if let Some(resp) = guard::check_deadlock(&ctx, is_verified, &state) {
+    if let Some(resp) = guard::check_deadlock(&ctx, is_verified, &state).await {
         state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
         send_access_log(&state, &ctx, resp.status().as_u16(), true, Some("challenge_deadlock".to_string()));
         return Ok(resp);
@@ -307,22 +329,22 @@ pub async fn handle_request(
         }
 
         // Stage 2: 限流
-        if let Some(resp) = guard::check_rate_limit(&ctx, is_verified, &state) {
+        if let Some(resp) = guard::check_rate_limit(&ctx, is_verified, &state).await {
             state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
             send_access_log(&state, &ctx, 429, true, Some("rate_limit".to_string()));
             return Ok(resp);
         }
 
         // Stage 3: WAF 规则匹配
-        if let Some(resp) = guard::check_waf_rules(&ctx, &state).await {
+        if let Some((resp, rule_trigger)) = guard::check_waf_rules(&ctx, &state).await {
             state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
-            send_access_log(&state, &ctx, 403, true, None); // matched_rule 在 guard 内部已记录
+            send_access_log(&state, &ctx, 403, true, Some(rule_trigger)); 
             return Ok(resp);
         }
     }
 
     // Stage 4+5: 路由匹配 + 反向代理/静态文件
-    let result = router::route_and_proxy(req, &ctx, &state).await;
+    let result = router::route_and_proxy(req_for_routing, &ctx, &state).await;
     match &result {
         Ok(resp) => {
             send_access_log(&state, &ctx, resp.status().as_u16(), false, None);

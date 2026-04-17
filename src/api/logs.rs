@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use axum::{extract::Query, extract::State, Json};
 use serde::Deserialize;
-use sqlx::Row;
+use sqlx::{Row, QueryBuilder, MySql};
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -24,43 +24,46 @@ pub async fn get_attack_logs(
     let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    let mut where_clauses = vec!["1=1".to_string()];
-    if let Some(ref ip) = q.ip {
-        where_clauses.push(format!("ip_address LIKE '%{}%'", ip.replace('\'', "''")));
-    }
-    if let Some(ref path) = q.path {
-        where_clauses.push(format!(
-            "request_path LIKE '%{}%'",
-            path.replace('\'', "''")
-        ));
-    }
-    if let Some(ref rule) = q.rule {
-        where_clauses.push(format!(
-            "matched_rule LIKE '%{}%'",
-            rule.replace('\'', "''")
-        ));
-    }
-    if let Some(ref start) = q.start {
-        where_clauses.push(format!("created_at >= '{}'", start));
-    }
-    if let Some(ref end) = q.end {
-        where_clauses.push(format!("created_at <= '{}'", end));
-    }
+    let mut count_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT COUNT(*) FROM attack_logs WHERE 1=1");
+    let mut data_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT ip_address, request_path, matched_rule, created_at FROM attack_logs WHERE 1=1");
 
-    let where_sql = where_clauses.join(" AND ");
+    let apply_filters = |qb: &mut QueryBuilder<MySql>| {
+        if let Some(ref ip) = q.ip {
+            qb.push(" AND ip_address LIKE ");
+            qb.push_bind(format!("%{}%", ip));
+        }
+        if let Some(ref path) = q.path {
+            qb.push(" AND request_path LIKE ");
+            qb.push_bind(format!("%{}%", path));
+        }
+        if let Some(ref rule) = q.rule {
+            qb.push(" AND matched_rule LIKE ");
+            qb.push_bind(format!("%{}%", rule));
+        }
+        if let Some(ref start) = q.start {
+            qb.push(" AND created_at >= ");
+            qb.push_bind(start.clone());
+        }
+        if let Some(ref end) = q.end {
+            qb.push(" AND created_at <= ");
+            qb.push_bind(end.clone());
+        }
+    };
 
-    let count_query = format!("SELECT COUNT(*) as cnt FROM attack_logs WHERE {}", where_sql);
-    let total: i64 = sqlx::query_scalar(&count_query)
+    apply_filters(&mut count_qb);
+    apply_filters(&mut data_qb);
+
+    let total: i64 = count_qb.build_query_scalar()
         .fetch_one(&state.db_pool)
         .await
         .unwrap_or(0);
 
-    let data_query = format!(
-        "SELECT ip_address, request_path, matched_rule, created_at FROM attack_logs \
-         WHERE {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
-        where_sql, page_size, offset
-    );
-    let rows = sqlx::query(&data_query)
+    data_qb.push(" ORDER BY created_at DESC LIMIT ")
+        .push_bind(page_size)
+        .push(" OFFSET ")
+        .push_bind(offset);
+
+    let rows = data_qb.build()
         .fetch_all(&state.db_pool)
         .await
         .unwrap_or_default();
@@ -94,37 +97,42 @@ pub async fn get_access_logs(
     let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
     let offset = (page - 1) * page_size;
 
-    let mut where_clauses = vec!["1=1".to_string()];
-    if let Some(ref ip) = q.ip {
-        where_clauses.push(format!("ip_address LIKE '%{}%'", ip.replace('\'', "''")));
-    }
-    if let Some(ref path) = q.path {
-        where_clauses.push(format!(
-            "request_path LIKE '%{}%'",
-            path.replace('\'', "''")
-        ));
-    }
-    if let Some(ref start) = q.start {
-        where_clauses.push(format!("created_at >= '{}'", start));
-    }
-    if let Some(ref end) = q.end {
-        where_clauses.push(format!("created_at <= '{}'", end));
-    }
+    let mut count_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT COUNT(*) FROM access_logs WHERE 1=1");
+    let mut data_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT ip_address, request_path, method, status_code, is_blocked, matched_rule, created_at, country, city FROM access_logs WHERE 1=1");
 
-    let where_sql = where_clauses.join(" AND ");
+    let mut apply_filters = |qb: &mut QueryBuilder<MySql>| {
+        if let Some(ref ip) = q.ip {
+            qb.push(" AND ip_address LIKE ");
+            qb.push_bind(format!("%{}%", ip));
+        }
+        if let Some(ref path) = q.path {
+            qb.push(" AND request_path LIKE ");
+            qb.push_bind(format!("%{}%", path));
+        }
+        if let Some(ref start) = q.start {
+            qb.push(" AND created_at >= ");
+            qb.push_bind(start.clone());
+        }
+        if let Some(ref end) = q.end {
+            qb.push(" AND created_at <= ");
+            qb.push_bind(end.clone());
+        }
+    };
 
-    let count_query = format!("SELECT COUNT(*) as cnt FROM access_logs WHERE {}", where_sql);
-    let total: i64 = sqlx::query_scalar(&count_query)
+    apply_filters(&mut count_qb);
+    apply_filters(&mut data_qb);
+
+    let total: i64 = count_qb.build_query_scalar()
         .fetch_one(&state.db_pool)
         .await
         .unwrap_or(0);
 
-    let data_query = format!(
-        "SELECT ip_address, request_path, method, status_code, is_blocked, matched_rule, created_at, country, city \
-         FROM access_logs WHERE {} ORDER BY created_at DESC LIMIT {} OFFSET {}",
-        where_sql, page_size, offset
-    );
-    let rows = sqlx::query(&data_query)
+    data_qb.push(" ORDER BY created_at DESC LIMIT ")
+        .push_bind(page_size)
+        .push(" OFFSET ")
+        .push_bind(offset);
+
+    let rows = data_qb.build()
         .fetch_all(&state.db_pool)
         .await
         .unwrap_or_default();

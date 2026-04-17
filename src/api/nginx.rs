@@ -101,21 +101,9 @@ server {{
     }
 }
 
-/// 根据站点名或 server_name 生成文件名，将非字母数字字符替换为下划线
-/// 优先级: site_name > server_name > port
-fn conf_filename_from(site_name: Option<&str>, server_name: Option<&str>, port: u16) -> String {
-    let raw = site_name
-        .filter(|s| !s.is_empty())
-        .or_else(|| server_name.filter(|s| !s.is_empty() && *s != "_"))
-        .unwrap_or("");
-    if raw.is_empty() {
-        return format!("waf_site_{}.conf", port);
-    }
-    // 将点、连字符、通配符等替换为下划线，保持文件名安全
-    let safe: String = raw.chars().map(|c| {
-        if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }
-    }).collect();
-    format!("waf_site_{}.conf", safe)
+fn conf_filename_from() -> String {
+    let rand_hash = uuid::Uuid::new_v4().simple().to_string();
+    format!("waf_site_{}.conf", &rand_hash[..8])
 }
 
 /// 通过 Docker Socket 在 nginx 容器内执行命令
@@ -368,11 +356,7 @@ pub async fn add_nginx_config(
         }
     }
 
-    let filename = conf_filename_from(
-        payload.site_name.as_deref(),
-        payload.server_name.as_deref(),
-        payload.listen_port,
-    );
+    let filename = conf_filename_from();
     let conf_path = std::path::Path::new(NGINX_CONF_DIR).join(&filename);
 
     if conf_path.exists() {
@@ -435,13 +419,9 @@ pub async fn edit_nginx_config(
         }
     }
 
-    let old_path = std::path::Path::new(NGINX_CONF_DIR).join(&payload.old_filename);
-    let new_filename = conf_filename_from(
-        payload.site_name.as_deref(),
-        payload.server_name.as_deref(),
-        payload.listen_port,
-    );
+    let new_filename = payload.old_filename.clone();
     let new_path = std::path::Path::new(NGINX_CONF_DIR).join(&new_filename);
+    let old_path = new_path.clone();
 
     // 备份旧内容，用于测试失败时回滚
     let old_content = std::fs::read_to_string(&old_path).ok();

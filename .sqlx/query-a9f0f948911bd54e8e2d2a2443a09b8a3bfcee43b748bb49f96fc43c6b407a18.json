@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE routes SET path_prefix = ?, host_pattern = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ? AND host_pattern = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "a9f0f948911bd54e8e2d2a2443a09b8a3bfcee43b748bb49f96fc43c6b407a18"
+}

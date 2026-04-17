@@ -25,7 +25,7 @@ fn host_matches(pattern: &str, host: &str) -> bool {
 
 /// Stage 4+5: 路由匹配 + 反向代理分发
 pub async fn route_and_proxy(
-    req: Request<Incoming>,
+    mut req: Request<Either<Incoming, Full<Bytes>>>,
     ctx: &RequestContext,
     state: &AppState,
 ) -> Result<Response<Either<Incoming, Full<Bytes>>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -86,7 +86,7 @@ pub async fn route_and_proxy(
 }
 
 async fn proxy_to_upstream(
-    mut req: Request<Incoming>,
+    mut req: Request<Either<Incoming, Full<Bytes>>>,
     route: &Route,
     suffix: &str,
     ctx: &RequestContext,

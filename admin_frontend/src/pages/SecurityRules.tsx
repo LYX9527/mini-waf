@@ -99,9 +99,9 @@ export default function SecurityRules() {
     }
   }
 
-  const handleDelete = async (rule: string) => {
+  const handleDelete = async (record: any) => {
     try {
-      await api.delete('/rules', { data: { rule } })
+      await api.delete('/rules', { data: { rule: record.keyword, target_field: record.target_field, match_type: record.match_type } })
       message.success('规则已删除')
       fetchRules()
     } catch {
@@ -212,7 +212,7 @@ export default function SecurityRules() {
       key: 'action',
       width: 90,
       render: (_: any, record: any) => (
-        <Popconfirm title="确定删除此规则？" onConfirm={() => handleDelete(record.keyword)}
+        <Popconfirm title="确定删除此规则？" onConfirm={() => handleDelete(record)}
           okText="删除" cancelText="取消" okType="danger">
           <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
         </Popconfirm>

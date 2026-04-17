@@ -25,7 +25,7 @@ export default function SiteManagement() {
   const [routes, setRoutes] = useState<RouteItem[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [editingRoute, setEditingRoute] = useState<{ id: number; path_prefix: string } | null>(null)
+  const [editingRoute, setEditingRoute] = useState<{ id: number; path_prefix: string; host_pattern: string | null } | null>(null)
   const [form] = Form.useForm()
   const [healthStatus, setHealthStatus] = useState<Record<string, HealthInfo>>({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
@@ -59,7 +59,7 @@ export default function SiteManagement() {
         upstream: route.upstream,
         is_spa: route.is_spa,
       })
-      setEditingRoute({ id: route.id, path_prefix: route.path_prefix })
+      setEditingRoute({ id: route.id, path_prefix: route.path_prefix, host_pattern: route.host_pattern || null })
     } else {
       form.resetFields()
       setEditingRoute(null)
@@ -73,7 +73,7 @@ export default function SiteManagement() {
       // normalize: empty string -> undefined (so backend stores NULL)
       if (!values.host_pattern) values.host_pattern = undefined
       if (editingRoute) {
-        await api.put('/routes/edit', { ...values, old_path_prefix: editingRoute.path_prefix })
+        await api.put('/routes/edit', { ...values, old_path_prefix: editingRoute.path_prefix, old_host_pattern: editingRoute.host_pattern })
         message.success('路由更新成功')
       } else {
         await api.post('/routes', values)

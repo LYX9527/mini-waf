@@ -9,6 +9,33 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 
+#[derive(Clone, Debug)]
+pub struct SystemSettings {
+    pub rate_limit_threshold: u64,
+    pub penalty_ban_score: u32,
+    pub penalty_attack_score: u32,
+    pub token_ttl_secs: u64,
+    pub captcha_ttl_secs: u64,
+    pub rate_limit_window_secs: u64,
+    pub penalty_ttl_secs: u64,
+    pub trust_upstream_proxy: bool,
+}
+
+impl Default for SystemSettings {
+    fn default() -> Self {
+        Self {
+            rate_limit_threshold: crate::config::RATE_LIMIT_THRESHOLD as u64,
+            penalty_ban_score: crate::config::PENALTY_BAN_SCORE,
+            penalty_attack_score: crate::config::PENALTY_ATTACK_SCORE,
+            token_ttl_secs: crate::config::TOKEN_TTL_SECS,
+            captcha_ttl_secs: crate::config::CAPTCHA_TTL_SECS,
+            rate_limit_window_secs: crate::config::RATE_LIMIT_WINDOW_SECS,
+            penalty_ttl_secs: crate::config::PENALTY_TTL_SECS,
+            trust_upstream_proxy: false,
+        }
+    }
+}
+
 /// 攻击日志结构体
 #[derive(Debug)]
 pub struct AttackLog {
@@ -31,6 +58,7 @@ pub struct WafRule {
     pub keyword: String,
     pub target_field: String, // "URL", "Header", "Body", "User-Agent"
     pub match_type: String,   // "Contains", "Regex", "Exact"
+    pub rule_type: String,    // "DEFAULT", "CUSTOM"
     pub compiled_regex: Option<Regex>,
 }
 
@@ -93,10 +121,10 @@ pub struct AppState {
     pub log_tx: mpsc::Sender<AttackLog>,
     pub db_pool: MySqlPool,
     pub custom_block_page: RwLock<String>,
-    pub rate_limiter: Cache<String, u64>,
-    pub penalty_box: Cache<String, u32>,
-    pub captcha_answers: Cache<String, (u32, u32)>,
-    pub verified_tokens: Cache<String, ClientFingerprint>,
+    pub rate_limiter: RwLock<Cache<String, u64>>,
+    pub penalty_box: RwLock<Cache<String, u32>>,
+    pub captcha_answers: RwLock<Cache<String, (u32, u32)>>,
+    pub verified_tokens: RwLock<Cache<String, ClientFingerprint>>,
     // 黑白名单（内存 HashSet，O(1) 查找）
     pub ip_blacklist: RwLock<HashSet<String>>,
     pub ip_whitelist: RwLock<HashSet<String>>,
@@ -109,4 +137,10 @@ pub struct AppState {
     pub geo_db: Option<maxminddb::Reader<Vec<u8>>>,
     pub geo_blocked_countries: RwLock<HashSet<String>>,
     pub healthy_upstreams: RwLock<HashSet<String>>,
+    
+    // 动态全局设置
+    pub settings: RwLock<SystemSettings>,
+    
+    // 动态 SNI 证书挂载中心
+    pub cert_resolver: Arc<crate::proxy::tls::DynamicCertResolver>,
 }

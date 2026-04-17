@@ -15,7 +15,7 @@ pub fn is_bot(ctx: &RequestContext) -> bool {
 }
 
 /// Stage 0.5: Cookie/Token 令牌验证 + 指纹绑定检测
-pub fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
+pub async fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
     let cookie_header = match ctx.raw_headers.get(hyper::header::COOKIE) {
         Some(v) => v,
         None => return false,
@@ -28,7 +28,7 @@ pub fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
     for part in cookie_str.split(';') {
         let part = part.trim();
         if let Some(token) = part.strip_prefix("waf_clearance=") {
-            if let Some(original_fp) = state.verified_tokens.get(token) {
+            if let Some(original_fp) = state.verified_tokens.read().await.get(token) {
                 if original_fp.ip == ctx.ip && original_fp.user_agent == ctx.user_agent {
                     return true;
                 } else {
@@ -37,7 +37,7 @@ pub fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
                         "⚠️ 环境变化，令牌失效！\n   Token: {}\n   原始环境 -> IP: {}, UA: {}\n   当前环境 -> IP: {}, UA: {}",
                         token, original_fp.ip, original_fp.user_agent, ctx.ip, ctx.user_agent
                     );
-                    state.verified_tokens.invalidate(token);
+                    state.verified_tokens.write().await.invalidate(token);
                 }
             }
             break;
@@ -48,7 +48,7 @@ pub fn verify_token(ctx: &RequestContext, state: &AppState) -> bool {
 
 /// Stage 0.9: 质询死锁检测
 /// 返回 Some(response) 表示用户仍在质询中，应拦截
-pub fn check_deadlock(
+pub async fn check_deadlock(
     ctx: &RequestContext,
     is_verified: bool,
     state: &AppState,
@@ -56,7 +56,7 @@ pub fn check_deadlock(
     if is_verified {
         return None;
     }
-    let (n1, n2) = state.captcha_answers.get(&ctx.ip)?;
+    let (n1, n2) = state.captcha_answers.read().await.get(&ctx.ip)?;
     if n1 == 0 && n2 == 0 {
         println!("🤖 IP {} 仍处于 [JS 质询死锁] 状态，强制拦截", ctx.ip);
         let html = render_js_challenge_page(&ctx.ip, &ctx.target_url);
@@ -73,10 +73,11 @@ pub async fn check_penalty(
     ctx: &RequestContext,
     state: &AppState,
 ) -> Option<Response<Either<Incoming, Full<Bytes>>>> {
-    let current_penalty = state.penalty_box.get(&ctx.ip).unwrap_or(0);
+    let current_penalty = state.penalty_box.read().await.get(&ctx.ip).unwrap_or(0);
     println!("🤖 IP {} 当前惩罚分：{}", ctx.ip, current_penalty);
 
-    if current_penalty >= config::PENALTY_BAN_SCORE {
+    let ban_score = state.settings.read().await.penalty_ban_score;
+    if current_penalty >= ban_score {
         let custom_page = state.custom_block_page.read().await.clone();
         let html = render_error_page(
             Some(&custom_page),
@@ -94,15 +95,16 @@ pub async fn check_penalty(
 
 /// Stage 2: 高频 CC 攻击限流
 /// 返回 None 表示未触发限流或已通过验证
-pub fn check_rate_limit(
+pub async fn check_rate_limit(
     ctx: &RequestContext,
     is_verified: bool,
     state: &AppState,
 ) -> Option<Response<Either<Incoming, Full<Bytes>>>> {
-    let count = state.rate_limiter.get(&ctx.ip).unwrap_or(0) + 1;
-    state.rate_limiter.insert(ctx.ip.clone(), count);
+    let count = state.rate_limiter.read().await.get(&ctx.ip).unwrap_or(0) + 1;
+    state.rate_limiter.write().await.insert(ctx.ip.clone(), count);
 
-    if count <= config::RATE_LIMIT_THRESHOLD as u64 || is_verified {
+    let threshold = state.settings.read().await.rate_limit_threshold as u64;
+    if count <= threshold || is_verified {
         return None;
     }
 
@@ -110,7 +112,7 @@ pub fn check_rate_limit(
     if count % 2 == 0 {
         // 路线 A: JS 无感质询
         println!("🤖 频率异常，触发 [JS 质询]: IP {}", ctx.ip);
-        state.captcha_answers.insert(ctx.ip.clone(), (0, 0));
+        state.captcha_answers.write().await.insert(ctx.ip.clone(), (0, 0));
         let html = render_js_challenge_page(&ctx.ip, &ctx.target_url);
         Some(create_response(html, StatusCode::TOO_MANY_REQUESTS).unwrap())
     } else {
@@ -119,7 +121,7 @@ pub fn check_rate_limit(
         let nanos = chrono::Utc::now().timestamp_subsec_nanos();
         let num1 = ((nanos / 1000) % 10) + 1;
         let num2 = ((nanos / 100000) % 10) + 1;
-        state.captcha_answers.insert(ctx.ip.clone(), (num1, num2));
+        state.captcha_answers.write().await.insert(ctx.ip.clone(), (num1, num2));
         let html = render_captcha_page(&ctx.ip, num1, num2, &ctx.target_url);
         Some(create_response(html, StatusCode::TOO_MANY_REQUESTS).unwrap())
     }
@@ -146,7 +148,7 @@ fn match_rule_logic(rule: &WafRule, target: &str) -> bool {
 pub async fn check_waf_rules(
     ctx: &RequestContext,
     state: &AppState,
-) -> Option<Response<Either<Incoming, Full<Bytes>>>> {
+) -> Option<(Response<Either<Incoming, Full<Bytes>>>, String)> {
     let rules = state.rules.read().await;
     let mut hit_rule_keyword = String::new();
 
@@ -165,7 +167,14 @@ pub async fn check_waf_rules(
                 }
                 hit
             }
-            "Body" => false, // TODO: 需要在 handler 缓冲 body 流，目前反向代理以流式流出为主，暂不拦截体
+            "Body" => {
+                if let Some(ref b) = ctx.body_bytes {
+                    let body_str = String::from_utf8_lossy(b);
+                    match_rule_logic(rule, &body_str)
+                } else {
+                    false
+                }
+            }
             _ => match_rule_logic(rule, &ctx.path_query), // 默认降级匹配 URL
         };
 
@@ -181,9 +190,10 @@ pub async fn check_waf_rules(
     }
 
     // 惩罚
-    let current_penalty = state.penalty_box.get(&ctx.ip).unwrap_or(0);
-    let new_penalty = current_penalty + config::PENALTY_ATTACK_SCORE;
-    state.penalty_box.insert(ctx.ip.clone(), new_penalty);
+    let current_penalty = state.penalty_box.read().await.get(&ctx.ip).unwrap_or(0);
+    let attack_score = state.settings.read().await.penalty_attack_score;
+    let new_penalty = current_penalty + attack_score;
+    state.penalty_box.write().await.insert(ctx.ip.clone(), new_penalty);
 
     println!(
         "❌ 拦截攻击！IP: {}, 惩罚分: {}/100, 规则: {}",
@@ -194,7 +204,7 @@ pub async fn check_waf_rules(
         time: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         ip: ctx.ip_addr,
         path: ctx.path_query.clone(),
-        matched_rule: hit_rule_keyword,
+        matched_rule: hit_rule_keyword.clone(),
     };
     let _ = state.log_tx.send(log).await;
 
@@ -207,5 +217,5 @@ pub async fn check_waf_rules(
         "#ff3366",
         &ctx.ip,
     );
-    Some(create_response(html, StatusCode::FORBIDDEN).unwrap())
+    Some((create_response(html, StatusCode::FORBIDDEN).unwrap(), hit_rule_keyword))
 }

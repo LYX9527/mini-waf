@@ -1,5 +1,6 @@
-import { Table, Button, Modal, Form, Input, InputNumber, Popconfirm, Tag, Tabs, Switch, Spin } from 'antd'
-import { PlusOutlined, DeleteOutlined, EditOutlined, CheckCircleOutlined, SaveOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, InputNumber, Popconfirm, Tag, Tabs, Switch, Spin, Space, AutoComplete } from 'antd'
+import { PlusOutlined, DeleteOutlined, EditOutlined, CheckCircleOutlined, SaveOutlined, MinusCircleOutlined } from '@ant-design/icons'
+import Editor from '@monaco-editor/react'
 import { useEffect, useState, useRef } from 'react'
 import api from '../api/client'
 import message from '../utils/messageApi'
@@ -26,58 +27,26 @@ function CodeEditor({
   height?: number
   readOnly?: boolean
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const lines = (value || '').split('\n')
-
   return (
     <div style={{
-      display: 'flex',
       border: '1px solid #30363d',
       borderRadius: 6,
       overflow: 'hidden',
-      background: '#0d1117',
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
-      fontSize: 13,
-      lineHeight: '20px',
-      height,
     }}>
-      <div style={{
-        padding: '12px 0',
-        background: '#161b22',
-        color: '#484f58',
-        textAlign: 'right',
-        userSelect: 'none',
-        minWidth: 44,
-        borderRight: '1px solid #21262d',
-        overflowY: 'hidden',
-      }}>
-        {lines.map((_, i) => (
-          <div key={i} style={{ padding: '0 10px', height: 20 }}>{i + 1}</div>
-        ))}
-      </div>
-      <textarea
-        ref={textareaRef}
+      <Editor
+        height={height}
+        defaultLanguage="nginx"
+        theme="vs-dark"
         value={value}
-        onChange={(e) => onChange?.(e.target.value)}
-        readOnly={readOnly}
-        spellCheck={false}
-        style={{
-          flex: 1,
-          padding: 12,
-          background: 'transparent',
-          color: '#c9d1d9',
-          border: 'none',
-          outline: 'none',
-          resize: 'none',
-          fontFamily: 'inherit',
-          fontSize: 'inherit',
-          lineHeight: 'inherit',
-          height: '100%',
-          boxSizing: 'border-box',
-          tabSize: 4,
-          whiteSpace: 'pre',
-          overflowX: 'auto',
-          overflowY: 'auto',
+        onChange={(val) => onChange?.(val || '')}
+        beforeMount={handleEditorWillMount}
+        options={{
+          readOnly,
+          minimap: { enabled: false },
+          fontSize: 13,
+          fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
+          scrollBeyondLastLine: false,
+          automaticLayout: true,
         }}
       />
     </div>
@@ -196,6 +165,115 @@ function MainConfEditor() {
   )
 }
 
+const PRESET_KEYS = [
+  { value: 'listen' },
+  { value: 'server_name' },
+  { value: 'proxy_pass' },
+  { value: 'root' },
+  { value: 'index' },
+  { value: 'try_files' },
+  { value: 'return' },
+  { value: 'rewrite' },
+  { value: 'ssl_certificate' },
+  { value: 'ssl_certificate_key' },
+  { value: 'access_log' },
+  { value: 'error_log' },
+];
+
+const handleEditorWillMount = (monaco: any) => {
+  // 防止在 React StrictMode 或 HMR 时重复注册导致报错
+  if (monaco.languages.getLanguages().some((l: any) => l.id === 'nginx')) {
+    return;
+  }
+
+  monaco.languages.register({ id: 'nginx' });
+
+  monaco.languages.setMonarchTokensProvider('nginx', {
+    keywords: PRESET_KEYS.map(k => k.value).concat([
+      'server', 'location', 'events', 'http', 'worker_processes', 
+      'worker_connections', 'client_max_body_size', 'upstream', 
+      'log_format', 'sendfile', 'keepalive_timeout'
+    ]),
+    tokenizer: {
+      root: [
+        [/[a-zA-Z_]\w*/, {
+          cases: {
+            '@keywords': 'keyword',
+            '@default': 'identifier'
+          }
+        }],
+        [/#.*/, 'comment'],
+        [/"([^"\\]|\\.)*$/, 'string.invalid'],
+        [/"/, 'string', '@string'],
+        [/'([^'\\]|\\.)*$/, 'string.invalid'],
+        [/'/, 'string', '@string2'],
+        [/\d+/, 'number'],
+        [/[{}()\[\]]/, '@brackets'],
+        [/[;,.]/, 'delimiter']
+      ],
+      string: [
+        [/[^\\"]+/, 'string'],
+        [/\\./, 'string.escape.invalid'],
+        [/"/, 'string', '@pop']
+      ],
+      string2: [
+        [/[^\\']+/, 'string'],
+        [/\\./, 'string.escape.invalid'],
+        [/'/, 'string', '@pop']
+      ]
+    }
+  });
+
+  monaco.languages.registerCompletionItemProvider('nginx', {
+    provideCompletionItems: (model: any, position: any) => {
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+      
+      const suggestions = PRESET_KEYS.map(k => ({
+        label: k.value,
+        kind: monaco.languages.CompletionItemKind.Keyword,
+        insertText: k.value,
+        range: range
+      })).concat(['server', 'location', 'events', 'http'].map(k => ({
+        label: k,
+        kind: monaco.languages.CompletionItemKind.Keyword,
+        insertText: k,
+        range: range
+      })));
+      return { suggestions };
+    }
+  });
+};
+
+const generateRawContent = (directives: { key: string; value: string }[]) => {
+  let content = "server {\n";
+  for (const d of directives) {
+    if (!d || !d.key) continue;
+    content += `    ${d.key} ${d.value};\n`;
+  }
+  content += "}\n";
+  return content;
+}
+
+const parseDirectives = (raw: string) => {
+  const lines = raw.split('\n');
+  const directives = [];
+  for (let line of lines) {
+    line = line.trim();
+    if (!line || line === 'server {' || line === '}') continue;
+    const match = line.match(/^([a-zA-Z0-9_]+)\s+(.+);$/);
+    if (match) {
+      directives.push({ key: match[1], value: match[2] });
+    }
+  }
+  return directives.length > 0 ? directives : [{ key: 'listen', value: '8090' }];
+}
+
 // ─── 站点配置 Tab ───────────────────────────────────
 
 function SiteConfigsTab() {
@@ -225,17 +303,14 @@ function SiteConfigsTab() {
     setAdvancedMode(false)
     setRawContent('')
     form.resetFields()
+    form.setFieldsValue({ directives: [{ key: 'listen', value: '8090' }] })
     setModalOpen(true)
   }
 
   const openEditModal = (record: NginxConfig) => {
-    form.setFieldsValue({
-      listen_port: record.listen_port,
-      site_name: record.site_name,
-      server_name: record.server_name,
-      root_path: record.root_path,
-    })
     setRawContent(record.raw_content || '')
+    const directives = parseDirectives(record.raw_content || '')
+    form.setFieldsValue({ directives })
     setEditingFilename(record.filename)
     setAdvancedMode(false)
     setModalOpen(true)
@@ -243,26 +318,26 @@ function SiteConfigsTab() {
 
   const handleSubmit = async () => {
     try {
-      if (advancedMode) {
-        const port = form.getFieldValue('listen_port')
-        if (!port) {
-          message.error('请填写监听端口')
-          return
-        }
-        if (editingFilename !== null) {
-          await api.put('/nginx/configs', { old_filename: editingFilename, listen_port: port, raw_content: rawContent })
-        } else {
-          await api.post('/nginx/configs', { listen_port: port, raw_content: rawContent })
-        }
+      let finalRaw = rawContent;
+      let port = 80;
+
+      if (!advancedMode) {
+        const values = await form.validateFields();
+        finalRaw = generateRawContent(values.directives || []);
+        const listenDir = (values.directives || []).find((d: any) => d && d.key === 'listen');
+        port = listenDir ? parseInt(listenDir.value, 10) : 80;
       } else {
-        const values = await form.validateFields()
-        if (editingFilename !== null) {
-          await api.put('/nginx/configs', { ...values, old_filename: editingFilename })
-        } else {
-          await api.post('/nginx/configs', values)
-        }
+        const parsed = parseDirectives(rawContent);
+        const listenDir = parsed.find((d: any) => d && d.key === 'listen');
+        port = listenDir ? parseInt(listenDir.value, 10) : 80;
       }
-      // 成功走到这里说明拦截器没有 reject（status !== 'error'）
+
+      if (editingFilename !== null) {
+        await api.put('/nginx/configs', { old_filename: editingFilename, listen_port: port, raw_content: finalRaw })
+      } else {
+        await api.post('/nginx/configs', { listen_port: port, raw_content: finalRaw })
+      }
+
       message.success(editingFilename !== null ? '配置已更新' : '配置已创建')
       setModalOpen(false)
       setEditingFilename(null)
@@ -284,22 +359,13 @@ function SiteConfigsTab() {
   }
 
   const handleModeSwitch = (checked: boolean) => {
-    if (checked && !rawContent.trim()) {
-      const port = form.getFieldValue('listen_port') || 80
-      const sn = form.getFieldValue('server_name') || '_'
-      setRawContent(`server {
-    listen ${port};
-    server_name ${sn};
-
-    location / {
-        proxy_pass         http://mini-waf:48080;
-        proxy_set_header   Host               $host;
-        proxy_set_header   X-Real-IP          $remote_addr;
-        proxy_set_header   X-Forwarded-For    $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto  $scheme;
-    }
-}
-`)
+    if (checked) {
+      // 转高级模式：同步表单内容到 rawContent
+      const values = form.getFieldsValue();
+      setRawContent(generateRawContent(values.directives || []));
+    } else {
+      // 转普通模式：从 rawContent 解析到表单
+      form.setFieldsValue({ directives: parseDirectives(rawContent) });
     }
     setAdvancedMode(checked)
   }
@@ -387,42 +453,56 @@ function SiteConfigsTab() {
         width={advancedMode ? 750 : 520}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" initialValues={{ listen_port: 8090 }}>
-          <Form.Item name="listen_port" label="监听端口" rules={[{ required: true, message: '请输入端口号' }]}>
-            <InputNumber min={1} max={65535} style={{ width: '100%' }} />
-          </Form.Item>
-
+        <Form form={form} layout="vertical" initialValues={{ directives: [{ key: 'listen', value: '8090' }] }}>
+          <div style={{ marginBottom: 12, color: '#8b949e', fontSize: 13 }}>
+            配置将会生成为独立的随机文件存储，防止命名冲突。
+          </div>
           {!advancedMode ? (
-            <>
-              <Form.Item
-                name="site_name"
-                label="站点名称"
-                extra="用于配置文件命名，留空时自动使用域名或端口号">
-                <Input placeholder="例如: my-site（留空则自动推导）" />
-              </Form.Item>
-              <Form.Item name="server_name" label="域名 (可选)">
-                <Input placeholder="example.com（留空则为通配）" />
-              </Form.Item>
-              <Form.Item
-                name="root_path"
-                label={
-                  <span>
-                    静态文件根目录
-                    <span style={{ color: '#8b949e', fontSize: 12, fontWeight: 400, marginLeft: 8 }}>
-                      （可选，留空则使用 WAF 反向代理模式）
-                    </span>
-                  </span>
-                }
-              >
-                <Input placeholder="/usr/share/nginx/html（留空则为 WAF 代理模式）" />
-              </Form.Item>
-            </>
+            <Form.List name="directives">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <Space key={key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'key']}
+                        rules={[{ required: true, message: '请输入指令键' }]}
+                      >
+                        <AutoComplete
+                          options={PRESET_KEYS}
+                          placeholder="例如: proxy_pass"
+                          style={{ width: 180 }}
+                          filterOption={(inputValue, option) =>
+                            option!.value.toUpperCase().indexOf(inputValue.toUpperCase()) !== -1
+                          }
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'value']}
+                        rules={[{ required: true, message: '请输入指令值' }]}
+                      >
+                        <Input placeholder="参数值" style={{ width: 300 }} />
+                      </Form.Item>
+                      <MinusCircleOutlined onClick={() => remove(name)} style={{ color: '#f85149' }} />
+                    </Space>
+                  ))}
+                  <Form.Item>
+                    <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                      添加指令
+                    </Button>
+                  </Form.Item>
+                </>
+              )}
+            </Form.List>
           ) : (
             <div style={{ marginBottom: 16 }}>
               <div style={{ marginBottom: 8, color: '#c9d1d9', fontSize: 13 }}>
                 Nginx Server Block 配置
               </div>
-              <CodeEditor value={rawContent} onChange={setRawContent} height={360} />
+              <div style={{ border: '1px solid #30363d', borderRadius: 6, overflow: 'hidden' }}>
+                <Editor height={380} defaultLanguage="nginx" theme="vs-dark" value={rawContent} onChange={(v) => setRawContent(v || '')} beforeMount={handleEditorWillMount} options={{ minimap: { enabled: false }, fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace", fontSize: 13 }} />
+              </div>
             </div>
           )}
         </Form>

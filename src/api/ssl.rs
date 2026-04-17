@@ -291,6 +291,13 @@ pub async fn upload_cert(
     .bind(&issuer).bind(not_before_dt).bind(not_after_dt)
     .execute(&state.db_pool).await;
 
+    // 热重载挂载到 SNI 解析器
+    if let Err(e) = state.cert_resolver.add_cert(&domain, &cert_path_str, &key_path_str) {
+        crate::log_error!("TLS_SNI", "证书已入库，但挂载 SNI 解析器失败: {}", e);
+    } else {
+        crate::log_success!("TLS_SNI", "热重载 SNI 证书: {}", domain);
+    }
+
     let days = days_until_expiry(&not_after_str);
     (StatusCode::OK, Json(serde_json::json!({
         "status": "success",
@@ -319,6 +326,9 @@ pub async fn delete_cert(
         .bind(&domain)
         .execute(&state.db_pool)
         .await;
+
+    state.cert_resolver.remove_cert(&domain);
+    crate::log_info!("TLS_SNI", "已从 SNI 卸载证书: {}", domain);
 
     Json(serde_json::json!({ "status": "success", "message": format!("证书 {} 已删除", domain) }))
 }
@@ -781,6 +791,12 @@ pub async fn request_cert(
         .bind(&provider)
         .execute(&state_clone.db_pool)
         .await;
+
+        if let Err(e) = state_clone.cert_resolver.add_cert(&display_domain, &cert_path_str, &key_path_str) {
+            crate::log_error!("TLS_SNI", "ACME 证书已入库，但挂载 SNI 失败: {}", e);
+        } else {
+            crate::log_success!("TLS_SNI", "ACME 证书自动热重载 SNI: {}", display_domain);
+        }
 
         let days = days_until_expiry(&not_after);
         send_line!(serde_json::json!({

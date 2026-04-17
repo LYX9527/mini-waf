@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE ssl_certs SET not_before=?, not_after=?, issuer=?, updated_at=NOW() WHERE domain=?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "b4744da903f0d3edd851b2a003d8c7d6aef2f2d4b9e20c97a16ab94148824808"
+}

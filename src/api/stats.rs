@@ -11,7 +11,7 @@ pub async fn get_realtime_stats(
     let uptime = state.counters.start_time.elapsed().as_secs();
     let total = state.counters.total_requests_today.load(Ordering::Relaxed);
     let blocked = state.counters.blocked_requests_today.load(Ordering::Relaxed);
-    let active = state.rate_limiter.iter().count() as u64;
+    let active = state.rate_limiter.read().await.iter().count() as u64;
 
     // QPS 滑动窗口计算
     let qps = {

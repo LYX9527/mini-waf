@@ -15,6 +15,8 @@ pub struct AddRuleRequest {
 #[derive(Deserialize)]
 pub struct DeleteRuleRequest {
     pub rule: String,
+    pub target_field: String,
+    pub match_type: String,
 }
 
 #[derive(Deserialize)]
@@ -23,6 +25,7 @@ pub struct EditRouteRequest {
     pub path_prefix: String,
     pub upstream: String,
     pub host_pattern: Option<String>,
+    pub old_host_pattern: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +88,7 @@ pub async fn add_rule(
                     keyword: payload.rule.clone(),
                     target_field: target_field.clone(),
                     match_type: match_type.clone(),
+                    rule_type: "CUSTOM".to_string(),
                     compiled_regex,
                 });
             }
@@ -105,8 +109,10 @@ pub async fn delete_rule(
     Json(payload): Json<DeleteRuleRequest>,
 ) -> Json<serde_json::Value> {
     let result = sqlx::query!(
-        "DELETE FROM rules WHERE keyword = ?",
-        payload.rule
+        "DELETE FROM rules WHERE keyword = ? AND target_field = ? AND match_type = ?",
+        payload.rule,
+        payload.target_field,
+        payload.match_type
     )
     .execute(&state.db_pool)
     .await;
@@ -114,7 +120,7 @@ pub async fn delete_rule(
     match result {
         Ok(_) => {
             let mut rules = state.rules.write().await;
-            rules.retain(|r| r.keyword != payload.rule);
+            rules.retain(|r| !(r.keyword == payload.rule && r.target_field == payload.target_field && r.match_type == payload.match_type));
             Json(serde_json::json!({
                 "status": "success",
                 "message": format!("WAF 规则 '{}' 已彻底删除", payload.rule)
@@ -218,12 +224,12 @@ pub async fn import_rules(
     Json(payload): Json<ImportRulesRequest>,
 ) -> Json<serde_json::Value> {
     if payload.replace_all {
-        // 先清空数据库和内存
+        // 先清空数据库和内存（仅删除 CUSTOM 类型规则）
         let _ = sqlx::query("DELETE FROM rules WHERE rule_type = 'CUSTOM'")
             .execute(&state.db_pool)
             .await;
         let mut rules = state.rules.write().await;
-        rules.clear();
+        rules.retain(|r| r.rule_type != "CUSTOM");
         drop(rules);
     }
 
@@ -258,6 +264,7 @@ pub async fn import_rules(
                         keyword: item.keyword.clone(),
                         target_field: item.target_field.clone(),
                         match_type: item.match_type.clone(),
+                        rule_type: "CUSTOM".to_string(),
                         compiled_regex,
                     });
                 }
@@ -319,11 +326,12 @@ pub async fn load_default_rules(
         match res {
             Ok(r) if r.rows_affected() > 0 => {
                 let mut rules = state.rules.write().await;
-                if !rules.iter().any(|r| r.keyword == keyword) {
+                if !rules.iter().any(|r| r.keyword == keyword && r.target_field == target && r.match_type == mtype) {
                     rules.push(crate::state::WafRule {
                         keyword: keyword.to_string(),
                         target_field: target.to_string(),
                         match_type: mtype.to_string(),
+                        rule_type: "DEFAULT".to_string(),
                         compiled_regex,
                     });
                 }
@@ -569,20 +577,33 @@ pub async fn edit_route(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EditRouteRequest>,
 ) -> Json<serde_json::Value> {
-    let update_result = sqlx::query!(
-        "UPDATE routes SET path_prefix = ?, host_pattern = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ?",
-        payload.path_prefix,
-        payload.host_pattern,
-        payload.upstream,
-        payload.old_path_prefix
-    )
-    .execute(&state.db_pool)
-    .await;
+    let update_result = if let Some(ref old_host) = payload.old_host_pattern {
+        sqlx::query!(
+            "UPDATE routes SET path_prefix = ?, host_pattern = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ? AND host_pattern = ?",
+            payload.path_prefix,
+            payload.host_pattern,
+            payload.upstream,
+            payload.old_path_prefix,
+            old_host
+        )
+        .execute(&state.db_pool)
+        .await
+    } else {
+        sqlx::query!(
+            "UPDATE routes SET path_prefix = ?, host_pattern = ?, upstream = ?, route_type = 'proxy' WHERE path_prefix = ? AND host_pattern IS NULL",
+            payload.path_prefix,
+            payload.host_pattern,
+            payload.upstream,
+            payload.old_path_prefix
+        )
+        .execute(&state.db_pool)
+        .await
+    };
 
     match update_result {
         Ok(result) if result.rows_affected() > 0 => {
             let mut routes = state.routes.write().await;
-            routes.retain(|r| r.path_prefix != payload.old_path_prefix);
+            routes.retain(|r| !(r.path_prefix == payload.old_path_prefix && r.host_pattern == payload.old_host_pattern));
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
                 host_pattern: payload.host_pattern,

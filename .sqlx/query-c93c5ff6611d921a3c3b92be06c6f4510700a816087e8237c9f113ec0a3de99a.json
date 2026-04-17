@@ -1,0 +1,34 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT setting_key, setting_value FROM system_settings",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "setting_key",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "max_size": 400
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "setting_value",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "max_size": 2000
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c93c5ff6611d921a3c3b92be06c6f4510700a816087e8237c9f113ec0a3de99a"
+}

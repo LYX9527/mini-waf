@@ -9,6 +9,10 @@ use mini_waf::{log_daemon, log_error, log_info, log_success, log_warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
+    
+    // 强制注册 Rustls 的默认密码学供给商 (Ring)，修复 rustls 0.23 必须手动选择 Provider 的新规范
+    rustls::crypto::ring::default_provider().install_default().ok();
+
     log_info!("SYSTEM", "启动 MINI WAF");
 
     // 1. 连接 MySQL 数据库
@@ -25,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     log_success!("DATABASE", "数据库迁移完成");
     // 2. 加载 WAF 防御规则
-    let rule_records = sqlx::query!("SELECT keyword, target_field, match_type FROM rules WHERE status = 1")
+    let rule_records = sqlx::query!("SELECT keyword, target_field, match_type, rule_type FROM rules WHERE status = 1")
         .fetch_all(&pool)
         .await?;
     let initial_rules: Vec<state::WafRule> = rule_records.into_iter().map(|r| {
@@ -38,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             keyword: r.keyword,
             target_field: r.target_field,
             match_type: r.match_type,
+            rule_type: r.rule_type,
             compiled_regex,
         }
     }).collect();
@@ -96,31 +101,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 6. 创建访问日志通道
     let (access_log_tx, mut access_log_rx) = mpsc::channel::<AccessLog>(5000);
 
-    // 7. 初始化缓存
-    let rate_limiter = moka::sync::Cache::builder()
-        .time_to_live(std::time::Duration::from_secs(config::RATE_LIMIT_WINDOW_SECS))
-        .build();
-    let penalty_box = moka::sync::Cache::builder()
-        .time_to_live(std::time::Duration::from_secs(config::PENALTY_TTL_SECS))
-        .build();
-    let captcha_answers = moka::sync::Cache::builder()
-        .time_to_live(std::time::Duration::from_secs(config::CAPTCHA_TTL_SECS))
-        .build();
-    let verified_tokens = moka::sync::Cache::builder()
-        .time_to_live(std::time::Duration::from_secs(config::TOKEN_TTL_SECS))
-        .build();
-
     // 8. 获取全局设置
-    let block_page_row = sqlx::query!("SELECT setting_value FROM system_settings WHERE setting_key = 'custom_block_page'")
-        .fetch_optional(&pool)
+    let settings_rows = sqlx::query!("SELECT setting_key, setting_value FROM system_settings")
+        .fetch_all(&pool)
         .await?;
-    let custom_block_page = block_page_row.map(|r| r.setting_value).unwrap_or_default();
+        
+    let mut custom_block_page = String::new();
+    let mut initial_geo_blocked = HashSet::new();
+    let mut app_settings = state::SystemSettings::default();
 
-    let geo_countries_row = sqlx::query!("SELECT setting_value FROM system_settings WHERE setting_key = 'geo_blocked_countries'")
-        .fetch_optional(&pool)
-        .await?;
-    let geo_str = geo_countries_row.map(|r| r.setting_value).unwrap_or_default();
-    let initial_geo_blocked: HashSet<String> = geo_str.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_uppercase()).collect();
+    for row in settings_rows {
+        let val = row.setting_value;
+        match row.setting_key.as_str() {
+            "custom_block_page" => custom_block_page = val,
+            "geo_blocked_countries" => {
+                initial_geo_blocked = val.split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_uppercase()).collect();
+            }
+            "rate_limit_threshold" => if let Ok(v) = val.parse() { app_settings.rate_limit_threshold = v; }
+            "penalty_ban_score" => if let Ok(v) = val.parse() { app_settings.penalty_ban_score = v; }
+            "penalty_attack_score" => if let Ok(v) = val.parse() { app_settings.penalty_attack_score = v; }
+            "token_ttl_secs" => if let Ok(v) = val.parse() { app_settings.token_ttl_secs = v; }
+            "captcha_ttl_secs" => if let Ok(v) = val.parse() { app_settings.captcha_ttl_secs = v; }
+            "rate_limit_window_secs" => if let Ok(v) = val.parse() { app_settings.rate_limit_window_secs = v; }
+            "penalty_ttl_secs" => if let Ok(v) = val.parse() { app_settings.penalty_ttl_secs = v; }
+            "trust_upstream_proxy" => { app_settings.trust_upstream_proxy = val == "1" || val.to_lowercase() == "true"; }
+            _ => {}
+        }
+    }
+
+    // 7. 初始化缓存
+    let rate_limiter = RwLock::new(moka::sync::Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(app_settings.rate_limit_window_secs))
+        .build());
+    let penalty_box = RwLock::new(moka::sync::Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(app_settings.penalty_ttl_secs))
+        .build());
+    let captcha_answers = RwLock::new(moka::sync::Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(app_settings.captcha_ttl_secs))
+        .build());
+    let verified_tokens = RwLock::new(moka::sync::Cache::builder()
+        .time_to_live(std::time::Duration::from_secs(app_settings.token_ttl_secs))
+        .build());
+
+
 
     let mut geo_db = None;
     if let Ok(mmdb_path) = std::env::var("MMDB_PATH") {
@@ -155,7 +178,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         geo_db,
         geo_blocked_countries: RwLock::new(initial_geo_blocked),
         healthy_upstreams: RwLock::new(HashSet::new()),
+        settings: RwLock::new(app_settings),
+        cert_resolver: Arc::new(proxy::tls::DynamicCertResolver::new()),
     });
+
+    // 9.5 加载所有落盘证书到 SNI 挂载中心
+    let cert_records = sqlx::query!("SELECT domain, cert_path, key_path FROM ssl_certs")
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+    
+    for cr in cert_records {
+        if let Err(e) = state.cert_resolver.add_cert(&cr.domain, &cr.cert_path, &cr.key_path) {
+            log_error!("TLS_SNI", "加载域名 {} 证书失败: {}", cr.domain, e);
+        } else {
+            log_success!("TLS_SNI", "绑定 SNI 证书: {}", cr.domain);
+        }
+    }
 
     // 10. 后台任务：攻击日志落盘
     let log_pool = pool.clone();
@@ -260,16 +299,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         proxy::health::start_health_checker(state_for_health).await;
     });
 
-    // 12.0 启动 TLS HTTPS 代理 (如果配置了证书)
-    if let (Ok(cert), Ok(key)) = (std::env::var("TLS_CERT_PATH"), std::env::var("TLS_KEY_PATH")) {
-        if !cert.is_empty() && !key.is_empty() {
-            let port = std::env::var("TLS_PORT").unwrap_or_else(|_| "443".to_string()).parse::<u16>().unwrap_or(443);
-            let state_for_tls = state.clone();
-            tokio::spawn(async move {
-                proxy::tls::start_tls_proxy_server(state_for_tls, &cert, &key, port).await;
-            });
-        }
-    }
+    // 12.0 启动 TLS HTTPS 代理 (始终启动，证书动态加载)
+    let port = std::env::var("TLS_PORT").unwrap_or_else(|_| "443".to_string()).parse::<u16>().unwrap_or(443);
+    let state_for_tls = state.clone();
+    let resolver_for_tls = state_for_tls.cert_resolver.clone();
+    tokio::spawn(async move {
+        proxy::tls::start_tls_proxy_server(state_for_tls, resolver_for_tls, port).await;
+    });
+
+    // 12.1 启动 ACME 自动续签守护进程
+    let state_for_cron = state.clone();
+    tokio::spawn(async move {
+        mini_waf::cron::start_acme_renew_daemon(state_for_cron).await;
+    });
 
     // 12. 启动 WAF HTTP 代理 (主线程阻塞)
     proxy::start_proxy_server(state).await;

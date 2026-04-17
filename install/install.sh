@@ -109,10 +109,10 @@ EOF
     sed -i.bak \
         -e "s|49888:48080|${WAF_PORT}:48080|g" \
         -e "s|49777:8081|${ADMIN_PORT}:8081|g" \
-        -e "s|mysql://mini_waf_user:password@mysql:3306/mini_waf?timezone=Asia%2FShanghai|mysql://mini_waf_user:${DB_PASSWORD}@mysql:3306/mini_waf?timezone=Asia%2FShanghai|g" \
+        -e "s|mysql://mini_waf_user:__DB_PASSWORD__@mysql:3306/mini_waf?timezone=Asia%2FShanghai|mysql://mini_waf_user:${DB_PASSWORD}@mysql:3306/mini_waf?timezone=Asia%2FShanghai|g" \
         -e "s|super_secret_waf_key_please_change|${JWT_SECRET}|g" \
         -e "s|MYSQL_ROOT_PASSWORD=rootpassword|MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}|g" \
-        -e "s|MYSQL_PASSWORD=password|MYSQL_PASSWORD=${DB_PASSWORD}|g" \
+        -e "s|MYSQL_PASSWORD=__DB_PASSWORD__|MYSQL_PASSWORD=${DB_PASSWORD}|g" \
         docker-compose.yml
     rm -f docker-compose.yml.bak
 
