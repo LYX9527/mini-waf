@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT keyword, target_field, match_type, rule_type FROM rules WHERE status = 1",
+  "query": "SELECT keyword, target_field, match_type, rule_type, action FROM rules WHERE status = 1",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,15 @@
           "flags": "NOT_NULL",
           "max_size": 200
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "action",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL",
+          "max_size": 200
+        }
       }
     ],
     "parameters": {
@@ -47,8 +56,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "3847f38cd8c1a21f0e746de3a7b2e83cdb7913b749d72bf6918db21ebd13513f"
+  "hash": "d35e2382ac271d39657fcfa2fdf6480ff039b708c4fcb1366081aec7f6d892c3"
 }

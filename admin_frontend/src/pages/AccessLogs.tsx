@@ -62,10 +62,17 @@ export default function AccessLogs() {
       title: 'IP',
       dataIndex: 'ip_address',
       key: 'ip_address',
-      width: 140,
+      width: 260,
       render: (ip: string, record: LogItem) => (
-        <Tooltip title={[record.country, record.city].filter(Boolean).join(' · ') || '未知'}>
-          <Tag color="blue">{ip}</Tag>
+        <Tooltip title={
+          <div>
+            <div style={{ borderBottom: '1px solid rgba(255,255,255,0.2)', paddingBottom: 4, marginBottom: 4 }}>{ip}</div>
+            <div>{[record.country, record.city].filter(Boolean).join(' · ') || '未知'}</div>
+          </div>
+        }>
+          <Tag color="blue" style={{ margin: 0, height: 'auto', padding: '2px 7px', whiteSpace: 'normal', wordBreak: 'break-all', lineHeight: 1.5 }}>
+            {ip}
+          </Tag>
         </Tooltip>
       ),
     },

@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT rate_limit_threshold FROM routes WHERE path_prefix = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rate_limit_threshold",
+        "type_info": {
+          "type": "Long",
+          "flags": "",
+          "max_size": 11
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c02920cce4e9f87ac3815da2a367c069247c88d0d65ecb7efa1dca70b09e6f9d"
+}

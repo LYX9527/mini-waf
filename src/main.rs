@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     log_success!("DATABASE", "数据库迁移完成");
     // 2. 加载 WAF 防御规则
-    let rule_records = sqlx::query!("SELECT keyword, target_field, match_type, rule_type FROM rules WHERE status = 1")
+    let rule_records = sqlx::query!("SELECT keyword, target_field, match_type, rule_type, action FROM rules WHERE status = 1")
         .fetch_all(&pool)
         .await?;
     let initial_rules: Vec<state::WafRule> = rule_records.into_iter().map(|r| {
@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             target_field: r.target_field,
             match_type: r.match_type,
             rule_type: r.rule_type,
+            action: r.action,
             compiled_regex,
         }
     }).collect();
@@ -51,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 3. 加载微服务路由表 (按前缀长度降序，最长前缀匹配优先)
     // 排序规则：有 host_pattern 的路由排在前面（优先级更高），然后按路径长度降序
     let route_records = sqlx::query!(
-        "SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE status = 1"
+        "SELECT path_prefix, host_pattern, upstream, route_type, rate_limit_threshold FROM routes WHERE status = 1"
     )
     .fetch_all(&pool)
     .await?;
@@ -62,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             host_pattern: r.host_pattern,
             upstream: r.upstream,
             route_type: RouteType::Proxy,
+            rate_limit_threshold: r.rate_limit_threshold,
             rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .collect();

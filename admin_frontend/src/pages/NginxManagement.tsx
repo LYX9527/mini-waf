@@ -252,10 +252,31 @@ const handleEditorWillMount = (monaco: any) => {
 
 const generateRawContent = (directives: { key: string; value: string }[]) => {
   let content = "server {\n";
+  const serverDirs = [];
+  const locationDirs = [];
+  
   for (const d of directives) {
     if (!d || !d.key) continue;
+    // 分离出应放入 location 块的指令
+    if (d.key.startsWith('proxy_') || d.key === 'add_header') {
+      locationDirs.push(d);
+    } else {
+      serverDirs.push(d);
+    }
+  }
+
+  for (const d of serverDirs) {
     content += `    ${d.key} ${d.value};\n`;
   }
+
+  if (locationDirs.length > 0) {
+    content += `\n    location / {\n`;
+    for (const d of locationDirs) {
+      content += `        ${d.key} ${d.value};\n`;
+    }
+    content += `    }\n`;
+  }
+
   content += "}\n";
   return content;
 }
@@ -265,13 +286,14 @@ const parseDirectives = (raw: string) => {
   const directives = [];
   for (let line of lines) {
     line = line.trim();
-    if (!line || line === 'server {' || line === '}') continue;
+    // 忽略嵌套花括号和特殊控制块声明
+    if (!line || line.endsWith('{') || line === '}') continue;
     const match = line.match(/^([a-zA-Z0-9_]+)\s+(.+);$/);
     if (match) {
       directives.push({ key: match[1], value: match[2] });
     }
   }
-  return directives.length > 0 ? directives : [{ key: 'listen', value: '8090' }];
+  return directives.length > 0 ? directives : [{ key: 'listen', value: '80' }];
 }
 
 // ─── 站点配置 Tab ───────────────────────────────────
@@ -307,12 +329,28 @@ function SiteConfigsTab() {
     setModalOpen(true)
   }
 
+  const isComplexConfig = (raw: string) => {
+    const s = raw.trim();
+    const serverMatch = s.match(/server\s*\{/g);
+    const count = serverMatch ? serverMatch.length : 0;
+    return count > 1 || s.includes('map ') || s.includes('upstream ');
+  }
+
   const openEditModal = (record: NginxConfig) => {
-    setRawContent(record.raw_content || '')
-    const directives = parseDirectives(record.raw_content || '')
-    form.setFieldsValue({ directives })
+    const raw = record.raw_content || '';
+    setRawContent(raw)
+    
+    const isAdv = isComplexConfig(raw);
+    setAdvancedMode(isAdv)
+    
+    if (!isAdv) {
+      form.setFieldsValue({ directives: parseDirectives(raw) })
+    } else {
+      // 占位
+      form.setFieldsValue({ directives: [{ key: 'listen', value: '80' }] })
+    }
+    
     setEditingFilename(record.filename)
-    setAdvancedMode(false)
     setModalOpen(true)
   }
 
@@ -364,7 +402,12 @@ function SiteConfigsTab() {
       const values = form.getFieldsValue();
       setRawContent(generateRawContent(values.directives || []));
     } else {
-      // 转普通模式：从 rawContent 解析到表单
+      // 转普通模式：检测是否会丢失复杂块
+      if (rawContent && isComplexConfig(rawContent)) {
+        if (!window.confirm('检测到当前配置包含复杂的结构 (多个 server 块, map 块等)！\n退回普通模式将会强制拍平为单个简单的 Server 块，会导致结构丢失。确定要继续吗？')) {
+          return;
+        }
+      }
       form.setFieldsValue({ directives: parseDirectives(rawContent) });
     }
     setAdvancedMode(checked)

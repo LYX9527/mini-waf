@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE status = 1",
+  "query": "SELECT path_prefix, host_pattern, upstream, route_type, rate_limit_threshold FROM routes WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -38,17 +38,27 @@
           "flags": "NOT_NULL | ENUM",
           "max_size": 24
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "rate_limit_threshold",
+        "type_info": {
+          "type": "Long",
+          "flags": "",
+          "max_size": 11
+        }
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "5e554cfa2b9c6c78d39f9930e9cc07547df7c6c782f57cc15511bba3c5b52198"
+  "hash": "e3482eb6b2c77cf7e7c8f808bd7dd54d7529d206825c058a92ee66a689921536"
 }

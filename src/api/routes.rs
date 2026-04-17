@@ -89,6 +89,7 @@ pub async fn add_rule(
                     target_field: target_field.clone(),
                     match_type: match_type.clone(),
                     rule_type: "CUSTOM".to_string(),
+                    action: "Block".to_string(),
                     compiled_regex,
                 });
             }
@@ -265,6 +266,7 @@ pub async fn import_rules(
                         target_field: item.target_field.clone(),
                         match_type: item.match_type.clone(),
                         rule_type: "CUSTOM".to_string(),
+                        action: "Block".to_string(),
                         compiled_regex,
                     });
                 }
@@ -332,6 +334,7 @@ pub async fn load_default_rules(
                         target_field: target.to_string(),
                         match_type: mtype.to_string(),
                         rule_type: "DEFAULT".to_string(),
+                        action: "Block".to_string(),
                         compiled_regex,
                     });
                 }
@@ -400,6 +403,7 @@ pub async fn add_route(
                 host_pattern: payload.host_pattern,
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
+                rate_limit_threshold: None,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
@@ -509,7 +513,7 @@ pub async fn enable_route(
 
     match result {
         Ok(_) => {
-            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, host_pattern, upstream, route_type FROM routes WHERE id = ?", payload.id).fetch_optional(&state.db_pool).await {
+            if let Ok(Some(r)) = sqlx::query!("SELECT path_prefix, host_pattern, upstream, route_type, rate_limit_threshold FROM routes WHERE id = ?", payload.id).fetch_optional(&state.db_pool).await {
                 let mut routes = state.routes.write().await;
                 let already = routes.iter().any(|rt| rt.path_prefix == r.path_prefix && rt.host_pattern == r.host_pattern);
                 if !already {
@@ -518,6 +522,7 @@ pub async fn enable_route(
                         host_pattern: r.host_pattern,
                         upstream: r.upstream,
                         route_type: RouteType::Proxy,
+                        rate_limit_threshold: r.rate_limit_threshold,
                         rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
                     routes.sort_by(|a, b| {
@@ -604,11 +609,19 @@ pub async fn edit_route(
         Ok(result) if result.rows_affected() > 0 => {
             let mut routes = state.routes.write().await;
             routes.retain(|r| !(r.path_prefix == payload.old_path_prefix && r.host_pattern == payload.old_host_pattern));
+            
+            // fetch old rate limit threshold
+            let old_threshold = sqlx::query!("SELECT rate_limit_threshold FROM routes WHERE path_prefix = ?", payload.path_prefix)
+                .fetch_optional(&state.db_pool)
+                .await
+                .ok().flatten().map(|r| r.rate_limit_threshold).flatten();
+
             let new_route = Route {
                 path_prefix: payload.path_prefix.clone(),
                 host_pattern: payload.host_pattern,
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
+                rate_limit_threshold: old_threshold,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             routes.push(new_route);

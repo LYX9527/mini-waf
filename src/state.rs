@@ -59,6 +59,7 @@ pub struct WafRule {
     pub target_field: String, // "URL", "Header", "Body", "User-Agent"
     pub match_type: String,   // "Contains", "Regex", "Exact"
     pub rule_type: String,    // "DEFAULT", "CUSTOM"
+    pub action: String,       // "Block", "Log"
     pub compiled_regex: Option<Regex>,
 }
 
@@ -76,6 +77,7 @@ pub struct Route {
     pub host_pattern: Option<String>,
     pub upstream: String, // host:port
     pub route_type: RouteType,
+    pub rate_limit_threshold: Option<i32>,
     pub rr_counter: Arc<AtomicUsize>,
 }
 
