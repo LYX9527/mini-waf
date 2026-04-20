@@ -16,9 +16,7 @@ use crate::state::AppState;
 const CERTS_ROOT: &str = "/certs";
 // nginx 容器内挂载路径（用于生成 nginx 配置）
 const NGINX_CERTS_ROOT: &str = "/etc/nginx/certs";
-// certbot 容器内，同一个 nginx_certs 卷挂载于 /etc/letsencrypt
 // WAF  -> /certs/<path>  ==  certbot -> /etc/letsencrypt/<path>
-const CERTBOT_CERTS_ROOT: &str = "/etc/letsencrypt";
 // 凭证 ini 文件在 WAF 容器内的写入目录
 const CERTS_TMP_HOST: &str = "/certs/tmp";
 // 同一写入目录在 certbot 容器内的读取路径
@@ -714,6 +712,8 @@ pub async fn request_cert(
 
     let domain_arg   = payload.domain.clone();
     let is_wildcard  = payload.wildcard;
+    let acme_account_id = payload.acme_account_id;
+    let dns_credential_id = payload.dns_credential_id;
     let state_clone  = state.clone();
 
     // ── 创建 body 流 channel ───────────────────────────────────────────────
@@ -776,11 +776,13 @@ pub async fn request_cert(
         };
 
         let _ = sqlx::query(
-            "INSERT INTO ssl_certs (domain, cert_path, key_path, issuer, not_before, not_after, auto_renew, acme_method)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            "INSERT INTO ssl_certs (domain, cert_path, key_path, issuer, not_before, not_after, auto_renew, acme_method, wildcard, acme_account_id, dns_credential_id)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE cert_path=VALUES(cert_path), key_path=VALUES(key_path),
                  issuer=VALUES(issuer), not_before=VALUES(not_before), not_after=VALUES(not_after),
-                 acme_method=VALUES(acme_method), updated_at=NOW()"
+                 acme_method=VALUES(acme_method), wildcard=VALUES(wildcard),
+                 acme_account_id=VALUES(acme_account_id), dns_credential_id=VALUES(dns_credential_id),
+                 updated_at=NOW()"
         )
         .bind(&display_domain)
         .bind(&cert_path_str)
@@ -789,6 +791,9 @@ pub async fn request_cert(
         .bind(not_before_dt)
         .bind(not_after_dt)
         .bind(&provider)
+        .bind(is_wildcard)
+        .bind(acme_account_id.map(|id| id as i64))
+        .bind(dns_credential_id.map(|id| id as i64))
         .execute(&state_clone.db_pool)
         .await;
 
@@ -958,12 +963,31 @@ pub async fn renew_cert(
     State(state): State<Arc<AppState>>,
     Path(domain): Path<String>,
 ) -> axum::response::Response {
-    // 续签委托给流式的 request_cert
+    // 从数据库读取原始申请参数，确保续签继承原证书的配置
+    let row = sqlx::query(
+        "SELECT wildcard, acme_account_id, dns_credential_id FROM ssl_certs WHERE domain = ?"
+    )
+    .bind(&domain)
+    .fetch_optional(&state.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    let (wildcard, acme_account_id, dns_credential_id) = if let Some(ref r) = row {
+        use sqlx::Row;
+        let w: bool = r.get::<i8, _>("wildcard") != 0;
+        let a: Option<u64> = r.get::<Option<i64>, _>("acme_account_id").map(|v| v as u64);
+        let d: Option<u64> = r.get::<Option<i64>, _>("dns_credential_id").map(|v| v as u64);
+        (w, a, d)
+    } else {
+        (false, None, None)
+    };
+
     let payload = CertRequestPayload {
         domain,
-        wildcard: false,
-        acme_account_id:   None,
-        dns_credential_id: None,
+        wildcard,
+        acme_account_id,
+        dns_credential_id,
     };
     request_cert(State(state), Json(payload)).await
 }

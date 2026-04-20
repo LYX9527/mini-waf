@@ -4,3 +4,4 @@ pub mod proxy;
 pub mod state;
 pub mod logger;
 pub mod cron;
+pub mod builtin_rules;

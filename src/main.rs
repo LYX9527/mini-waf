@@ -44,6 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match_type: r.match_type,
             rule_type: r.rule_type,
             action: r.action,
+            status: 1, // WHERE status = 1 已过滤
+            hit_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             compiled_regex,
         }
     }).collect();
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             upstream: r.upstream,
             route_type: RouteType::Proxy,
             rate_limit_threshold: r.rate_limit_threshold,
+            health_check_path: None,
             rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .collect();
@@ -204,10 +207,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log_daemon!("DAEMON", "攻击日志落盘守护进程已启动...");
         while let Some(log) = log_rx.recv().await {
             let insert_result = sqlx::query!(
-                "INSERT INTO attack_logs (ip_address, request_path, matched_rule) VALUES (?, ?, ?)",
+                "INSERT INTO attack_logs (ip_address, request_path, matched_rule, action) VALUES (?, ?, ?, ?)",
                 log.ip.to_string(),
                 log.path,
-                log.matched_rule
+                log.matched_rule,
+                log.action
             )
             .execute(&log_pool)
             .await;

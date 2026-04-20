@@ -23,7 +23,9 @@ pub async fn start_admin_server(state: Arc<AppState>) {
         // WAF 规则
         .route("/rules", get(routes::get_rules))
         .route("/rules", post(routes::add_rule))
+        .route("/rules", put(routes::edit_rule))
         .route("/rules", delete(routes::delete_rule))
+        .route("/rules/toggle", post(routes::toggle_rule))
         .route("/rules/export", get(routes::export_rules))
         .route("/rules/import", post(routes::import_rules))
         .route("/rules/defaults", get(routes::get_default_rules))

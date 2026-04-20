@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 
@@ -43,6 +43,7 @@ pub struct AttackLog {
     pub ip: SocketAddr,
     pub path: String,
     pub matched_rule: String,
+    pub action: String, // "BLOCKED" 或 "LOG_ONLY"
 }
 
 /// 客户端环境指纹 —— 用于绑定通行令牌
@@ -56,11 +57,22 @@ pub struct ClientFingerprint {
 #[derive(Clone, Debug)]
 pub struct WafRule {
     pub keyword: String,
-    pub target_field: String, // "URL", "Header", "Body", "User-Agent"
+    pub target_field: String, // "URL", "Header", "Body", "User-Agent", "Cookie"
     pub match_type: String,   // "Contains", "Regex", "Exact"
     pub rule_type: String,    // "DEFAULT", "CUSTOM"
     pub action: String,       // "Block", "Log"
+    pub status: i8,           // 1=启用, 0=停用
+    pub hit_count: Arc<AtomicU64>, // 运行时命中计数（重启归零）
     pub compiled_regex: Option<Regex>,
+}
+
+impl WafRule {
+    pub fn increment_hit(&self) {
+        self.hit_count.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn get_hit_count(&self) -> u64 {
+        self.hit_count.load(Ordering::Relaxed)
+    }
 }
 
 /// 路由类型
@@ -78,6 +90,8 @@ pub struct Route {
     pub upstream: String, // host:port
     pub route_type: RouteType,
     pub rate_limit_threshold: Option<i32>,
+    /// HTTP 健康检查路径（默认 /）
+    pub health_check_path: Option<String>,
     pub rr_counter: Arc<AtomicUsize>,
 }
 

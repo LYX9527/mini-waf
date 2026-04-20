@@ -319,6 +319,9 @@ pub async fn handle_request(
 
     let is_static_asset = is_static_asset_path(&ctx.path);
 
+    // 暂存观察模式命中的规则名（用于避免日志双写）
+    let mut log_mode_matched_rule: Option<String> = None;
+
     // 已验证用户请求静态资源时，跳过惩罚、限流、WAF 规则检查
     if !is_verified || !is_static_asset {
         // Stage 1: 惩罚盒子
@@ -336,10 +339,16 @@ pub async fn handle_request(
         }
 
         // Stage 3: WAF 规则匹配
-        if let Some((resp, rule_trigger)) = guard::check_waf_rules(&ctx, &state).await {
-            state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
-            send_access_log(&state, &ctx, 403, true, Some(rule_trigger)); 
-            return Ok(resp);
+        if let Some(hit) = guard::check_waf_rules(&ctx, &state).await {
+            if hit.action == "Block" {
+                // 拦截模式：返回 403
+                state.counters.blocked_requests_today.fetch_add(1, Ordering::Relaxed);
+                send_access_log(&state, &ctx, 403, true, Some(hit.matched_rule));
+                return Ok(hit.response.unwrap());
+            } else {
+                // 观察/日志模式：暂存规则名，不立即写日志，等路由完成后统一写一条
+                log_mode_matched_rule = Some(hit.matched_rule);
+            }
         }
     }
 
@@ -347,10 +356,10 @@ pub async fn handle_request(
     let result = router::route_and_proxy(req_for_routing, &ctx, &state).await;
     match &result {
         Ok(resp) => {
-            send_access_log(&state, &ctx, resp.status().as_u16(), false, None);
+            send_access_log(&state, &ctx, resp.status().as_u16(), false, log_mode_matched_rule);
         }
         Err(_) => {
-            send_access_log(&state, &ctx, 502, false, None);
+            send_access_log(&state, &ctx, 502, false, log_mode_matched_rule);
         }
     }
     result

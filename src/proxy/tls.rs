@@ -129,7 +129,11 @@ pub async fn start_tls_proxy_server(state: Arc<AppState>, resolver: Arc<DynamicC
                         super::handler::handle_request(req, remote_addr, state_clone.clone())
                     });
 
-                    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                    if let Err(err) = http1::Builder::new()
+                        .half_close(true)
+                        .serve_connection(io, service)
+                        .with_upgrades()
+                        .await {
                         // 忽略客户端提前关闭连接的错误
                         if !err.to_string().contains("connection closed") {
                             crate::log_warn!("HTTPS_PROXY", "处理 HTTPS 请求错误: {:?}", err);

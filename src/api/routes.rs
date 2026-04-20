@@ -10,6 +10,7 @@ pub struct AddRuleRequest {
     pub rule: String,
     pub target_field: Option<String>,
     pub match_type: Option<String>,
+    pub action: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +41,24 @@ pub struct RouteIdRequest {
     pub id: i64,
 }
 
+#[derive(Deserialize)]
+pub struct EditRuleRequest {
+    pub old_keyword: String,
+    pub old_target_field: String,
+    pub old_match_type: String,
+    pub keyword: Option<String>,
+    pub target_field: Option<String>,
+    pub match_type: Option<String>,
+    pub action: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ToggleRuleRequest {
+    pub keyword: String,
+    pub target_field: String,
+    pub match_type: String,
+}
+
 /// GET /rules: 获取当前所有拦截规则
 pub async fn get_rules(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let rules = state.rules.read().await;
@@ -47,7 +66,10 @@ pub async fn get_rules(State(state): State<Arc<AppState>>) -> Json<serde_json::V
         serde_json::json!({
             "keyword": r.keyword,
             "target_field": r.target_field,
-            "match_type": r.match_type
+            "match_type": r.match_type,
+            "action": r.action,
+            "status": r.status,
+            "hit_count": r.get_hit_count()
         })
     }).collect();
     Json(serde_json::json!({ "rules": rules_json }))
@@ -60,6 +82,7 @@ pub async fn add_rule(
 ) -> Json<serde_json::Value> {
     let target_field = payload.target_field.unwrap_or_else(|| "URL".to_string());
     let match_type = payload.match_type.unwrap_or_else(|| "Contains".to_string());
+    let action = payload.action.unwrap_or_else(|| "Block".to_string());
 
     // 校验正则表达式有效性
     let compiled_regex = if match_type == "Regex" {
@@ -72,10 +95,11 @@ pub async fn add_rule(
     };
 
     let insert_result = sqlx::query!(
-        "INSERT INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'CUSTOM', 1, ?, ?)",
+        "INSERT INTO rules (keyword, rule_type, status, target_field, match_type, action) VALUES (?, 'CUSTOM', 1, ?, ?, ?)",
         payload.rule,
         target_field,
-        match_type
+        match_type,
+        action
     )
     .execute(&state.db_pool)
     .await;
@@ -89,7 +113,9 @@ pub async fn add_rule(
                     target_field: target_field.clone(),
                     match_type: match_type.clone(),
                     rule_type: "CUSTOM".to_string(),
-                    action: "Block".to_string(),
+                    action: action.clone(),
+                    status: 1,
+                    hit_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     compiled_regex,
                 });
             }
@@ -134,70 +160,147 @@ pub async fn delete_rule(
     }
 }
 
+/// PUT /rules: 编辑现有规则
+pub async fn edit_rule(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EditRuleRequest>,
+) -> Json<serde_json::Value> {
+    let new_keyword = payload.keyword.as_deref().unwrap_or(&payload.old_keyword);
+    let new_target = payload.target_field.as_deref().unwrap_or(&payload.old_target_field);
+    let new_match = payload.match_type.as_deref().unwrap_or(&payload.old_match_type);
+    let new_action = payload.action.as_deref().unwrap_or("Block");
+
+    // 校验新正则
+    if new_match == "Regex" {
+        if regex::Regex::new(new_keyword).is_err() {
+            return Json(serde_json::json!({ "status": "error", "message": "无效的正则表达式" }));
+        }
+    }
+
+    let result = sqlx::query(
+        "UPDATE rules SET keyword = ?, target_field = ?, match_type = ?, action = ? WHERE keyword = ? AND target_field = ? AND match_type = ?"
+    )
+    .bind(new_keyword)
+    .bind(new_target)
+    .bind(new_match)
+    .bind(new_action)
+    .bind(&payload.old_keyword)
+    .bind(&payload.old_target_field)
+    .bind(&payload.old_match_type)
+    .execute(&state.db_pool)
+    .await;
+
+    match result {
+        Ok(r) if r.rows_affected() > 0 => {
+            let compiled_regex = if new_match == "Regex" {
+                regex::Regex::new(new_keyword).ok()
+            } else { None };
+
+            let mut rules = state.rules.write().await;
+            if let Some(rule) = rules.iter_mut().find(|r| {
+                r.keyword == payload.old_keyword && r.target_field == payload.old_target_field && r.match_type == payload.old_match_type
+            }) {
+                rule.keyword = new_keyword.to_string();
+                rule.target_field = new_target.to_string();
+                rule.match_type = new_match.to_string();
+                rule.action = new_action.to_string();
+                rule.compiled_regex = compiled_regex;
+            }
+            Json(serde_json::json!({ "status": "success", "message": "规则已更新" }))
+        }
+        Ok(_) => Json(serde_json::json!({ "status": "error", "message": "未找到要更新的规则" })),
+        Err(e) => Json(serde_json::json!({ "status": "error", "message": format!("规则更新失败: {}", e) })),
+    }
+}
+
+/// POST /rules/toggle: 停用/启用规则
+pub async fn toggle_rule(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ToggleRuleRequest>,
+) -> Json<serde_json::Value> {
+    // 查当前状态
+    let current_status = {
+        let rules = state.rules.read().await;
+        rules.iter().find(|r| {
+            r.keyword == payload.keyword && r.target_field == payload.target_field && r.match_type == payload.match_type
+        }).map(|r| r.status)
+    };
+
+    let new_status: i8 = match current_status {
+        Some(1) => 0,
+        Some(0) => 1,
+        _ => {
+            // 内存中没有（可能已停用且未加载），尝试从 DB 查
+            let row = sqlx::query("SELECT status FROM rules WHERE keyword = ? AND target_field = ? AND match_type = ?")
+                .bind(&payload.keyword)
+                .bind(&payload.target_field)
+                .bind(&payload.match_type)
+                .fetch_optional(&state.db_pool)
+                .await
+                .ok()
+                .flatten();
+            match row {
+                Some(r) => {
+                    use sqlx::Row;
+                    let s: i8 = r.get("status");
+                    if s == 1 { 0 } else { 1 }
+                }
+                None => return Json(serde_json::json!({ "status": "error", "message": "规则未找到" })),
+            }
+        }
+    };
+
+    let _ = sqlx::query("UPDATE rules SET status = ? WHERE keyword = ? AND target_field = ? AND match_type = ?")
+        .bind(new_status)
+        .bind(&payload.keyword)
+        .bind(&payload.target_field)
+        .bind(&payload.match_type)
+        .execute(&state.db_pool)
+        .await;
+
+    let mut rules = state.rules.write().await;
+    if new_status == 0 {
+        // 停用：在内存中标记 status=0
+        if let Some(rule) = rules.iter_mut().find(|r| {
+            r.keyword == payload.keyword && r.target_field == payload.target_field && r.match_type == payload.match_type
+        }) {
+            rule.status = 0;
+        }
+    } else {
+        // 启用：如果内存中已有则设 status=1，否则从 DB 加载
+        if let Some(rule) = rules.iter_mut().find(|r| {
+            r.keyword == payload.keyword && r.target_field == payload.target_field && r.match_type == payload.match_type
+        }) {
+            rule.status = 1;
+        } else {
+            let compiled_regex = if payload.match_type == "Regex" {
+                regex::Regex::new(&payload.keyword).ok()
+            } else { None };
+            rules.push(crate::state::WafRule {
+                keyword: payload.keyword.clone(),
+                target_field: payload.target_field.clone(),
+                match_type: payload.match_type.clone(),
+                rule_type: "CUSTOM".to_string(),
+                action: "Block".to_string(),
+                status: 1,
+                hit_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                compiled_regex,
+            });
+        }
+    }
+
+    let action_text = if new_status == 1 { "启用" } else { "停用" };
+    Json(serde_json::json!({
+        "status": "success",
+        "message": format!("规则已{}", action_text),
+        "new_status": new_status
+    }))
+}
+
 // ─── 内置默认规则集 ────────────────────────────────────────────────────────────
-/// 返回 OWASP Top10 核心规则集（关键词、目标区域、匹配模式、描述）
+/// 返回完整的 OWASP + 现代攻击检测规则集（委托给独立模块）
 fn builtin_default_rules() -> Vec<serde_json::Value> {
-    vec![
-        // SQL 注入
-        serde_json::json!({"keyword":"' or '1'='1","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 万能密码"}),
-        serde_json::json!({"keyword":"union select","target_field":"URL","match_type":"Contains","description":"SQL 注入 - UNION 查询"}),
-        serde_json::json!({"keyword":"drop table","target_field":"URL","match_type":"Contains","description":"SQL 注入 - DROP TABLE"}),
-        serde_json::json!({"keyword":"insert into","target_field":"URL","match_type":"Contains","description":"SQL 注入 - INSERT"}),
-        serde_json::json!({"keyword":"exec(","target_field":"URL","match_type":"Contains","description":"SQL 注入 - exec 函数"}),
-        serde_json::json!({"keyword":"or 1=1","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 永真条件"}),
-        serde_json::json!({"keyword":"-- ","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 注释符"}),
-        serde_json::json!({"keyword":";select ","target_field":"URL","match_type":"Contains","description":"SQL 注入 - 堆叠查询"}),
-        // XSS 跨站脚本
-        serde_json::json!({"keyword":"<script","target_field":"URL","match_type":"Contains","description":"XSS - script 标签"}),
-        serde_json::json!({"keyword":"javascript:","target_field":"URL","match_type":"Contains","description":"XSS - javascript: 伪协议"}),
-        serde_json::json!({"keyword":"onerror=","target_field":"URL","match_type":"Contains","description":"XSS - onerror 事件"}),
-        serde_json::json!({"keyword":"onload=","target_field":"URL","match_type":"Contains","description":"XSS - onload 事件"}),
-        serde_json::json!({"keyword":"<img src=x","target_field":"URL","match_type":"Contains","description":"XSS - img src 注入"}),
-        serde_json::json!({"keyword":"alert(","target_field":"URL","match_type":"Contains","description":"XSS - alert 弹窗"}),
-        serde_json::json!({"keyword":"document.cookie","target_field":"URL","match_type":"Contains","description":"XSS - cookie 窃取"}),
-        serde_json::json!({"keyword":"eval(","target_field":"URL","match_type":"Contains","description":"XSS/RCE - eval 执行"}),
-        // 路径穿越
-        serde_json::json!({"keyword":"../","target_field":"URL","match_type":"Contains","description":"路径穿越攻击"}),
-        serde_json::json!({"keyword":"..\\","target_field":"URL","match_type":"Contains","description":"路径穿越攻击 (Windows)"}),
-        serde_json::json!({"keyword":"%2e%2e%2f","target_field":"URL","match_type":"Contains","description":"路径穿越 - URL编码形式"}),
-        serde_json::json!({"keyword":"/etc/passwd","target_field":"URL","match_type":"Contains","description":"路径穿越 - 读取 passwd"}),
-        serde_json::json!({"keyword":"/etc/shadow","target_field":"URL","match_type":"Contains","description":"路径穿越 - 读取 shadow"}),
-        serde_json::json!({"keyword":"c:\\windows","target_field":"URL","match_type":"Contains","description":"路径穿越 - Windows 系统路径"}),
-        // RCE / 命令注入
-        serde_json::json!({"keyword":"cmd.exe","target_field":"URL","match_type":"Contains","description":"RCE - Windows cmd"}),
-        serde_json::json!({"keyword":"/bin/sh","target_field":"URL","match_type":"Contains","description":"RCE - Unix shell"}),
-        serde_json::json!({"keyword":"/bin/bash","target_field":"URL","match_type":"Contains","description":"RCE - bash"}),
-        serde_json::json!({"keyword":"wget http","target_field":"URL","match_type":"Contains","description":"RCE - wget 下载"}),
-        serde_json::json!({"keyword":"curl http","target_field":"URL","match_type":"Contains","description":"RCE - curl 下载"}),
-        serde_json::json!({"keyword":"phpinfo()","target_field":"URL","match_type":"Contains","description":"PHP 信息泄露"}),
-        serde_json::json!({"keyword":"passthru(","target_field":"URL","match_type":"Contains","description":"PHP RCE - passthru"}),
-        serde_json::json!({"keyword":"system(","target_field":"URL","match_type":"Contains","description":"PHP RCE - system"}),
-        // SSRF 服务端请求伪造
-        serde_json::json!({"keyword":"169.254.169.254","target_field":"URL","match_type":"Contains","description":"SSRF - AWS 元数据"}),
-        serde_json::json!({"keyword":"metadata.google.internal","target_field":"URL","match_type":"Contains","description":"SSRF - GCP 元数据"}),
-        serde_json::json!({"keyword":"file:///","target_field":"URL","match_type":"Contains","description":"SSRF - 本地文件读取"}),
-        serde_json::json!({"keyword":"gopher://","target_field":"URL","match_type":"Contains","description":"SSRF - Gopher 协议"}),
-        serde_json::json!({"keyword":"dict://","target_field":"URL","match_type":"Contains","description":"SSRF - Dict 协议"}),
-        // Log4Shell / Log4j
-        serde_json::json!({"keyword":"${jndi:","target_field":"URL","match_type":"Contains","description":"Log4Shell (CVE-2021-44228)"}),
-        serde_json::json!({"keyword":"${jndi:","target_field":"Header","match_type":"Contains","description":"Log4Shell (Header 注入)"}),
-        // 扫描器 / 恶意 UA
-        serde_json::json!({"keyword":"sqlmap","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - sqlmap"}),
-        serde_json::json!({"keyword":"nikto","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nikto"}),
-        serde_json::json!({"keyword":"masscan","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Masscan"}),
-        serde_json::json!({"keyword":"nessus","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nessus"}),
-        serde_json::json!({"keyword":"nmap","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Nmap"}),
-        serde_json::json!({"keyword":"acunetix","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - Acunetix"}),
-        serde_json::json!({"keyword":"zgrab","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - zgrab"}),
-        serde_json::json!({"keyword":"dirsearch","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - dirsearch"}),
-        serde_json::json!({"keyword":"gobuster","target_field":"User-Agent","match_type":"Contains","description":"扫描器 - gobuster"}),
-        // 敏感文件探测
-        serde_json::json!({"keyword":"wp-admin","target_field":"URL","match_type":"Contains","description":"WordPress 后台探测"}),
-        serde_json::json!({"keyword":".env","target_field":"URL","match_type":"Contains","description":"环境变量文件探测"}),
-        serde_json::json!({"keyword":".git/","target_field":"URL","match_type":"Contains","description":"Git 仓库泄露探测"}),
-        serde_json::json!({"keyword":"/.svn/","target_field":"URL","match_type":"Contains","description":"SVN 仓库泄露探测"}),
-        serde_json::json!({"keyword":"phpmyadmin","target_field":"URL","match_type":"Contains","description":"phpMyAdmin 探测"}),
-    ]
+    crate::builtin_rules::builtin_default_rules()
 }
 
 #[derive(serde::Deserialize)]
@@ -215,9 +318,12 @@ pub struct ImportRuleItem {
     pub target_field: String,
     #[serde(default = "default_contains")]
     pub match_type: String,
+    #[serde(default = "default_block")]
+    pub action: String,
 }
 fn default_url() -> String { "URL".to_string() }
 fn default_contains() -> String { "Contains".to_string() }
+fn default_block() -> String { "Block".to_string() }
 
 /// POST /rules/import — 批量导入规则（JSON 数组，可选 replace_all）
 pub async fn import_rules(
@@ -249,11 +355,12 @@ pub async fn import_rules(
         } else { None };
 
         let res = sqlx::query(
-            "INSERT IGNORE INTO rules (keyword, rule_type, status, target_field, match_type) VALUES (?, 'CUSTOM', 1, ?, ?)"
+            "INSERT IGNORE INTO rules (keyword, rule_type, status, target_field, match_type, action) VALUES (?, 'CUSTOM', 1, ?, ?, ?)"
         )
         .bind(&item.keyword)
         .bind(&item.target_field)
         .bind(&item.match_type)
+        .bind(&item.action)
         .execute(&state.db_pool)
         .await;
 
@@ -266,7 +373,9 @@ pub async fn import_rules(
                         target_field: item.target_field.clone(),
                         match_type: item.match_type.clone(),
                         rule_type: "CUSTOM".to_string(),
-                        action: "Block".to_string(),
+                        action: item.action.clone(),
+                        status: 1,
+                        hit_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                         compiled_regex,
                     });
                 }
@@ -293,6 +402,7 @@ pub async fn export_rules(State(state): State<Arc<AppState>>) -> Json<serde_json
         "keyword": r.keyword,
         "target_field": r.target_field,
         "match_type": r.match_type,
+        "action": r.action,
     })).collect();
     Json(serde_json::json!({ "rules": export, "count": export.len() }))
 }
@@ -335,6 +445,8 @@ pub async fn load_default_rules(
                         match_type: mtype.to_string(),
                         rule_type: "DEFAULT".to_string(),
                         action: "Block".to_string(),
+                        status: 1,
+                        hit_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                         compiled_regex,
                     });
                 }
@@ -404,6 +516,7 @@ pub async fn add_route(
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
                 rate_limit_threshold: None,
+                health_check_path: None,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let mut routes = state.routes.write().await;
@@ -523,6 +636,7 @@ pub async fn enable_route(
                         upstream: r.upstream,
                         route_type: RouteType::Proxy,
                         rate_limit_threshold: r.rate_limit_threshold,
+                        health_check_path: None,
                         rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     });
                     routes.sort_by(|a, b| {
@@ -622,6 +736,7 @@ pub async fn edit_route(
                 upstream: payload.upstream,
                 route_type: RouteType::Proxy,
                 rate_limit_threshold: old_threshold,
+                health_check_path: None,
                 rr_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             routes.push(new_route);

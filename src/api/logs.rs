@@ -100,7 +100,7 @@ pub async fn get_access_logs(
     let mut count_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT COUNT(*) FROM access_logs WHERE 1=1");
     let mut data_qb: QueryBuilder<MySql> = QueryBuilder::new("SELECT ip_address, request_path, method, status_code, is_blocked, matched_rule, created_at, country, city FROM access_logs WHERE 1=1");
 
-    let mut apply_filters = |qb: &mut QueryBuilder<MySql>| {
+    let apply_filters = |qb: &mut QueryBuilder<MySql>| {
         if let Some(ref ip) = q.ip {
             qb.push(" AND ip_address LIKE ");
             qb.push_bind(format!("%{}%", ip));

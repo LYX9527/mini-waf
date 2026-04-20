@@ -160,13 +160,66 @@ export default function SSLManagement() {
   }
 
   const handleRenew = async (domain: string) => {
-    setRenewingDomain(domain); message.info(`正在续签 ${domain}，请稍候...`)
+    setRenewingDomain(domain)
+    // 打开日志面板，使用流式 NDJSON 读取（与 handleRequestCert 一致）
+    setCertLogs([])
+    setCertLogDone(false)
+    setCertLogError(null)
+    setCertLogOpen(true)
+
     try {
-      const res = await api.post(`/ssl/certs/renew/${domain}`)
-      res.data.status === 'success' ? message.success(res.data.message) : message.error(res.data.message)
-      fetchCerts()
-    } catch { message.error('续签失败') }
-    finally { setRenewingDomain(null) }
+      const token = localStorage.getItem('mini_waf_token')
+      const resp = await fetch(`/api/v1/ssl/certs/renew/${domain}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+
+      if (!resp.ok || !resp.body) {
+        setCertLogError(`HTTP 错误: ${resp.status}`)
+        setCertLogDone(true)
+        setRenewingDomain(null)
+        return
+      }
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const evt = JSON.parse(line)
+            if (evt.type === 'log') {
+              setCertLogs(prev => [...prev, evt.data])
+            } else if (evt.type === 'result') {
+              if (evt.status === 'success') {
+                setCertLogDone(true)
+                message.success(evt.message)
+                fetchCerts()
+              } else {
+                setCertLogError(evt.message)
+                setCertLogDone(true)
+              }
+            }
+          } catch { /* 忽略非 JSON 行 */ }
+        }
+      }
+      setCertLogDone(true)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '续签失败'
+      setCertLogError(msg)
+      setCertLogDone(true)
+    } finally {
+      setRenewingDomain(null)
+    }
   }
 
   const handleToggleRenew = async (domain: string, auto_renew: boolean) => {

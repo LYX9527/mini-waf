@@ -31,7 +31,11 @@ pub async fn start_proxy_server(state: Arc<AppState>) {
                 handler::handle_request(req, remote_addr, state_clone.clone())
             });
 
-            if let Err(err) = http1::Builder::new().serve_connection(io, svc).await {
+            if let Err(err) = http1::Builder::new()
+                .half_close(true)
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await {
                 if !err.to_string().contains("connection closed") {
                     crate::log_warn!("HTTP_PROXY", "客户端连接断开/失败: {:?}", err);
                 }
