@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO attack_logs (ip_address, request_path, matched_rule, action) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "7d5d4e2fb04ba2ed34c7ac883f46cddf7c32597e105d67bb03e5df4c26973806"
+}
